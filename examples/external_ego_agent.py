@@ -3,8 +3,8 @@
 What it does
   1. Spawns an ego vehicle with role_name "ego_vehicle" (VSE adopts it by role name).
   2. Listens for VSE's ego route events (HTTP POST, JSON) -- see vse_playback/ego_route_sink.py.
-  3. On a "route" event: teleports the ego to the first waypoint, then drives to the last
-     waypoint (the destination) with CARLA's BasicAgent.
+  3. On a "route" event: teleports the ego to the first waypoint, then drives toward the last
+     waypoint (the destination) with a tiny pure-pursuit controller.
   4. On a "cancel" event: brakes and forgets the destination.
   5. Ticks the world itself if it is in synchronous mode (VSE waits for the tick in external mode).
 
@@ -13,19 +13,28 @@ Run it, then start VSE with the sink pointed here, and press Play:
     python examples/external_ego_agent.py --carla-host localhost --listen-port 8080
     VSE_EGO_ROUTE_SINK=http://localhost:8080/route python vse.py
 
-Needs the `carla` module and CARLA's PythonAPI/carla on PYTHONPATH (for `agents.navigation`).
-If this runs in Docker and VSE on the host, publish the port (-p 8080:8080) and use
---carla-host host.docker.internal.
+Needs only the `carla` pip package (same version as the server) -- NOT CARLA's PythonAPI/carla
+folder, so it runs in a bare container. If this runs in Docker and VSE on the host, publish the
+port (-p 8080:8080) and use --carla-host host.docker.internal.
+
+The driving here is deliberately crude: at each junction it follows the lane branch that gets
+closest to the destination (no global route planning), so it can pick wrong turns on complex
+maps. A real stack replaces `drive_step` with its own planner; the HTTP receiver stays the same.
 """
 
 import argparse
 import json
+import math
 import queue
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import carla
-from agents.navigation.basic_agent import BasicAgent
+
+LOOKAHEAD_M = 6.0      # pure-pursuit lookahead distance
+WHEELBASE_M = 2.9
+MAX_STEER_RAD = 0.7    # steering angle that maps to steer = 1.0
+ARRIVE_RADIUS_M = 3.0
 
 events = queue.Queue()
 
@@ -54,6 +63,30 @@ def spawn_ego(world):
     raise RuntimeError("No free spawn point for the ego")
 
 
+def drive_step(world_map, ego, destination, target_speed_ms):
+    """One control step toward `destination` (a carla.Location). Returns (control, arrived)."""
+    transform, velocity = ego.get_transform(), ego.get_velocity()
+    if transform.location.distance(destination) < ARRIVE_RADIUS_M:
+        return carla.VehicleControl(brake=1.0), True
+
+    # Lookahead point: follow the lane branch that ends up closest to the destination.
+    candidates = world_map.get_waypoint(transform.location).next(LOOKAHEAD_M)
+    target = min(candidates, key=lambda w: w.transform.location.distance(destination)) if candidates else None
+    target_loc = target.transform.location if target else destination
+
+    # Pure pursuit (CARLA frame: +yaw / +steer are clockwise, i.e. to the right).
+    alpha = math.atan2(target_loc.y - transform.location.y, target_loc.x - transform.location.x) \
+        - math.radians(transform.rotation.yaw)
+    alpha = math.atan2(math.sin(alpha), math.cos(alpha))
+    steer = math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), LOOKAHEAD_M) / MAX_STEER_RAD
+    speed_error = target_speed_ms - math.hypot(velocity.x, velocity.y)
+    return carla.VehicleControl(
+        steer=max(-1.0, min(1.0, steer)),
+        throttle=max(0.0, min(0.75, 0.5 * speed_error)),
+        brake=max(0.0, min(1.0, -0.5 * speed_error)),
+    ), False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--carla-host", default="localhost")
@@ -71,7 +104,8 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", args.listen_port), RouteHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
-    agent = None
+    destination = None
+    world_map = world.get_map()
     try:
         while True:
             # Synchronous world: we are the tick source. Asynchronous: just follow the server.
@@ -89,21 +123,19 @@ def main():
                     ego.set_transform(carla.Transform(
                         carla.Location(first["x"], first["y"], first["z"] + 0.5),
                         carla.Rotation(yaw=first["yaw"])))
-                    agent = BasicAgent(ego, target_speed=args.speed)
-                    agent.set_destination(carla.Location(dest["x"], dest["y"], dest["z"]))
+                    destination = carla.Location(dest["x"], dest["y"], dest["z"])
                     print(f"Driving to ({dest['x']:.1f}, {dest['y']:.1f}) from scenario '{event.get('scenario')}'")
                 elif event.get("event") == "cancel":
-                    agent = None
+                    destination = None
                     ego.apply_control(carla.VehicleControl(brake=1.0))
                     print("Route cancelled")
 
-            if agent is not None:
-                if agent.done():
-                    ego.apply_control(carla.VehicleControl(brake=1.0))
-                    agent = None
+            if destination is not None:
+                control, arrived = drive_step(world_map, ego, destination, args.speed / 3.6)
+                ego.apply_control(control)
+                if arrived:
+                    destination = None
                     print("Destination reached")
-                else:
-                    ego.apply_control(agent.run_step())
     except KeyboardInterrupt:
         pass
     finally:
