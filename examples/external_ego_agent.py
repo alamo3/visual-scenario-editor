@@ -95,14 +95,19 @@ def main():
     parser.add_argument("--speed", type=float, default=30.0, help="target speed, km/h")
     args = parser.parse_args()
 
+    # Bind the port first so a busy port fails before anything is spawned in the world.
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", args.listen_port), RouteHandler)
+    except OSError as exc:
+        raise SystemExit(f"Cannot listen on port {args.listen_port}: {exc}. "
+                         "Pick another with --listen-port and use the same port in VSE_EGO_ROUTE_SINK.")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
     client = carla.Client(args.carla_host, args.carla_port)
     client.set_timeout(10.0)
     world = client.get_world()
     ego = spawn_ego(world)
-    print(f"Ego spawned (id {ego.id}); waiting for a route from VSE...")
-
-    server = ThreadingHTTPServer(("0.0.0.0", args.listen_port), RouteHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"Ego spawned (id {ego.id}); waiting for a route from VSE on port {args.listen_port}...")
 
     destination = None
     world_map = world.get_map()
