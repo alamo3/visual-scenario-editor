@@ -20,6 +20,7 @@ from typing import Optional, Tuple
 
 import carla
 
+from vse_common import platform_utils
 from vse_editor.carla_io.camera_stream import CameraImageProcessor
 from vse_editor.rendering.overlays import OpenDriveOverlayRenderer
 from vse_editor.ui.info_panel import InfoPanel
@@ -148,7 +149,7 @@ def _server_confirmed_dead(editor):
     interaction with CARLA:
       - a server we launched: Popen.poll() (also reaps the zombie, so a dead
         child can't read as alive);
-      - a server we adopted by pid: os.kill(pid, 0) (ProcessLookupError = gone).
+      - a server we adopted by pid: platform_utils.pid_alive(pid).
     A process check can't false-positive under load (the process exists no
     matter how busy it is) and detects a segfault within one frame.
 
@@ -168,13 +169,7 @@ def _server_confirmed_dead(editor):
         return process.poll() is not None
     pid = getattr(manager, 'known_server_pid', None) if manager else None
     if pid:
-        try:
-            os.kill(int(pid), 0)
-            return False
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return False  # e.g. EPERM: process exists but isn't ours
+        return not platform_utils.pid_alive(pid)
     return _watchdog_client_dead(editor)
 
 

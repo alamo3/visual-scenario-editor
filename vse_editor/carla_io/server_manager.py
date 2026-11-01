@@ -8,7 +8,6 @@ from __future__ import annotations
 import atexit
 import logging
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -17,6 +16,8 @@ import time
 from typing import Optional
 
 import carla
+
+from vse_common import platform_utils
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,9 @@ class CarlaServerManager:
         if carla_path is None:
             carla_root = os.environ.get('CARLA_ROOT')
             if carla_root:
-                self.carla_path = os.path.join(carla_root, 'CarlaUE4.sh')
+                self.carla_path = os.path.join(carla_root, platform_utils.carla_executable_name())
             else:
-                self.carla_path = "./CarlaUE4.sh"
+                self.carla_path = "./" + platform_utils.carla_executable_name()
         else:
             self.carla_path = carla_path
         self.port = port
@@ -104,33 +105,24 @@ class CarlaServerManager:
         """Best-effort capture of the CARLA server PID for managed shutdowns."""
         pid = None
         try:
-            result = subprocess.run(['lsof', '-t', f'-i:{port}'], capture_output=True, text=True)
-            if result.returncode == 0:
-                lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-                if lines:
-                    pid = int(lines[0])
+            pid = platform_utils.find_listening_pid(port)
         except Exception as exc:
-            print(f"Warning: Unable to detect CARLA PID via lsof on port {port}: {exc}")
+            print(f"Warning: Unable to detect CARLA PID on port {port}: {exc}")
 
         if pid is None:
             try:
-                result = subprocess.run(['pgrep', '-f', 'CarlaUE4'], capture_output=True, text=True)
-                if result.returncode == 0:
-                    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-                    if lines:
-                        pid = int(lines[0])
+                pids = platform_utils.find_pids_by_name()
+                if pids:
+                    pid = pids[0]
             except Exception as exc:
-                print(f"Warning: Unable to detect CARLA PID via pgrep: {exc}")
+                print(f"Warning: Unable to detect CARLA PID by process name: {exc}")
 
         if pid:
             self.known_server_pid = pid
             # Remember the process group now, while the process is alive --
             # at stop time the group leader (CarlaUE4.sh) may already be gone
             # and os.getpgid() would fail, orphaning the UE4 binary.
-            try:
-                self.server_pgid = os.getpgid(pid)
-            except OSError:
-                self.server_pgid = None
+            self.server_pgid = platform_utils.get_group_id(pid)
         return pid
     
     def check_existing_carla_server(self, port):
@@ -152,25 +144,23 @@ class CarlaServerManager:
         """Kill any existing CARLA processes"""
         try:
             # Find and kill existing CARLA processes
-            result = subprocess.run(['pgrep', '-f', 'CarlaUE4'], capture_output=True, text=True)
-            if result.returncode == 0:
-                pids = result.stdout.strip().split('\n')
+            pids = platform_utils.find_pids_by_name()
+            if pids:
                 print(f"Found existing CARLA processes: {pids}")
                 for pid in pids:
-                    if pid.strip():
+                    try:
+                        print(f"Killing CARLA process {pid}")
+                        platform_utils.terminate_pid(pid)
+                        time.sleep(2)
+                        # Force kill if still running
                         try:
-                            print(f"Killing CARLA process {pid}")
-                            os.kill(int(pid), signal.SIGTERM)
-                            time.sleep(2)
-                            # Force kill if still running
-                            try:
-                                os.kill(int(pid), signal.SIGKILL)
-                            except (OSError, ProcessLookupError):
-                                # Process already terminated - this is fine
-                                pass
-                        except Exception as e:
-                            print(f"Failed to kill process {pid}: {e}")
-                            
+                            platform_utils.terminate_pid(pid, force=True)
+                        except (OSError, ProcessLookupError):
+                            # Process already terminated - this is fine
+                            pass
+                    except Exception as e:
+                        print(f"Failed to kill process {pid}: {e}")
+
                 # Wait a moment for cleanup
                 time.sleep(5)  # Increased cleanup wait time
                 self.known_server_pid = None
@@ -237,7 +227,7 @@ class CarlaServerManager:
         # launch. Override the path with VSE_CARLA_SERVER_LOG. The crashinfo dir under
         # ~/.config/Epic/CarlaUE4/Saved/Crashes/ is named with the same PID printed below, so the
         # log, the crash dump, and the VSE-side log can all be correlated by that PID.
-        server_log_path = os.environ.get("VSE_CARLA_SERVER_LOG", "/tmp/carla_server.log")
+        server_log_path = os.environ.get("VSE_CARLA_SERVER_LOG", platform_utils.default_server_log_path())
         try:
             self._server_log_handle = open(server_log_path, "w")
             server_stdout = self._server_log_handle
@@ -256,7 +246,7 @@ class CarlaServerManager:
                 cmd,
                 stdout=server_stdout,
                 stderr=server_stderr,
-                preexec_fn=os.setsid  # Create new process group
+                **platform_utils.new_process_group_popen_kwargs()  # own process group
             )
         except Exception as e:
             raise Exception(f"Failed to start CARLA server: {e}")
@@ -268,7 +258,7 @@ class CarlaServerManager:
 
         print(f"CARLA server started (PID: {self.process.pid})")
         self.known_server_pid = self.process.pid
-        # preexec_fn=os.setsid makes the wrapper the group leader, so its PID
+        # A new process group/session makes the wrapper the group leader, so its PID
         # is the pgid of the whole server tree (wrapper + UE4 binary).
         self.server_pgid = self.process.pid
 
@@ -360,40 +350,8 @@ class CarlaServerManager:
 
     @staticmethod
     def _pgid_alive(pgid):
-        """True while the group has a member that is not a zombie.
-
-        A plain killpg(pgid, 0) probe is not enough: an orphaned CarlaUE4.sh
-        wrapper (its launching VSE exited during a map-switch handoff) stays
-        as an unreaped ZOMBIE after it dies, and zombies still count as group
-        members -- the probe then reports a fully dead server as alive for as
-        long as init takes to reap it (observed live 2026-07-07: ~20 s hang on
-        exit + false 'survived SIGKILL' warning). Zombies hold no resources,
-        so they are ignored here.
-        """
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return False
-        except OSError:
-            # e.g. EPERM: the group exists but isn't ours -- treat as alive
-            return True
-        # Group exists -- check for at least one non-zombie member.
-        # /proc/<pid>/stat: "pid (comm) state ppid pgrp ..." -- comm may
-        # contain spaces/parens, so parse from the LAST ')'.
-        pgid = int(pgid)
-        for pid in os.listdir('/proc'):
-            if not pid.isdigit():
-                continue
-            try:
-                with open('/proc/%s/stat' % pid, 'rb') as f:
-                    data = f.read()
-                fields = data[data.rindex(b')') + 2:].split()
-                state, pgrp = fields[0], int(fields[2])
-            except (OSError, ValueError, IndexError):
-                continue  # process vanished mid-scan or malformed
-            if pgrp == pgid and state != b'Z':
-                return True
-        return False
+        """True while the group has a live (non-zombie) member. See platform_utils."""
+        return platform_utils.group_alive(pgid)
 
     def _wait_for_group_exit(self, pgid, timeout):
         """Poll until the whole process group is gone; reap our own child."""
@@ -423,10 +381,8 @@ class CarlaServerManager:
             # CarlaUE4.sh is only a wrapper: the UE4 binary is a child in the
             # same process group. Waiting on the wrapper alone lets the binary
             # outlive us, so we signal the GROUP and verify the GROUP is gone.
-            pgid = None
-            try:
-                pgid = os.getpgid(target_pid)
-            except OSError:
+            pgid = platform_utils.get_group_id(target_pid)
+            if pgid is None:
                 # Group leader already exited; fall back to the pgid captured
                 # at launch/adoption time (the group survives its leader).
                 pgid = self.server_pgid
@@ -435,14 +391,14 @@ class CarlaServerManager:
 
             try:
                 try:
-                    os.killpg(pgid, signal.SIGTERM)
+                    platform_utils.terminate_group(pgid)
                 except (OSError, ProcessLookupError):
                     pass  # group already gone (or unsignalable) - verify below
                 stopped = self._wait_for_group_exit(pgid, self._stop_sigterm_wait_s)
                 if not stopped:
                     logger.debug("SIGTERM did not stop server group %s, trying SIGKILL", pgid)
                     try:
-                        os.killpg(pgid, signal.SIGKILL)
+                        platform_utils.terminate_group(pgid, force=True)
                     except (OSError, ProcessLookupError):
                         pass
                     stopped = self._wait_for_group_exit(pgid, self._stop_sigkill_wait_s)
@@ -470,7 +426,7 @@ class CarlaServerManager:
                 print("CARLA server stopped")
             else:
                 print(f"WARNING: CARLA server processes (pgid {pgid}) survived SIGKILL; "
-                      "kill manually: pkill -f CarlaUE4")
+                      "kill manually: " + ("taskkill /F /T /IM CarlaUE4.exe" if platform_utils.IS_WINDOWS else "pkill -f CarlaUE4"))
         else:
             if self.use_existing_server:
                 print("Leaving existing CARLA server running")
