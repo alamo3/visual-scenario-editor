@@ -1,4 +1,4 @@
-"""Settings persistence (~/.cache/vse) + culling / play-camera appliers
+"""Settings persistence (~/.cache/vse; %LOCALAPPDATA%\\vse on Windows) + culling / play-camera appliers
 (duck-typed module functions, first arg `editor`). Moved verbatim from vse.py
 (step-39, Phase 7). Class attrs (_LEGACY_SETTINGS_FILES, PLAY_CAMERA_MODES,
 CULLING_PRESETS, CULLING_DEFAULT_M) stay on VisualScenarioEditor; culling_enabled
@@ -12,9 +12,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
 
+from vse_common import platform_utils
+
 
 def _get_vse_cache_dir(editor) -> Path:
     """Return the base cache directory for VSE."""
+    if platform_utils.IS_WINDOWS:
+        cache_base = os.environ.get('LOCALAPPDATA') or os.path.join(Path.home(), 'AppData', 'Local')
+        return Path(cache_base) / 'vse'
     cache_base = os.environ.get('XDG_CACHE_HOME')
     if not cache_base:
         cache_base = os.path.join(Path.home(), '.cache')

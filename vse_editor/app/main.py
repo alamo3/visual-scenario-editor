@@ -18,7 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="Visual Scenario Editor", add_help=True)
     parser.add_argument("--debug", action="store_true", help="Enable debug logs.")
     parser.add_argument("--port", type=int, help="CARLA port (default 2000).")
-    parser.add_argument("--carla-path", dest="carla_path", help="Path to CarlaUE4.sh.")
+    parser.add_argument("--carla-path", dest="carla_path", help="Path to the CARLA launcher (CarlaUE4.sh on Linux, CarlaUE4.exe on Windows).")
     parser.add_argument("--no-culling", action="store_true",
                         help="Start with mesh culling off (max_culling_distance=0).")
     parser.add_argument("--cull-distance", dest="cull_distance", type=float, default=None,

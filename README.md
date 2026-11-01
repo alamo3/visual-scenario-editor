@@ -115,6 +115,36 @@ for both versions.
    pip install -r visual-scenario-editor/requirements.txt
    ```
 
+### Windows (experimental)
+
+Windows support is new and has only been exercised on Linux so far, so expect rough edges. These steps
+mirror the Linux ones; use PowerShell. You can also run CARLA on another machine and connect to it from the
+editor (**Connect to remote server**), which avoids launching a local server entirely.
+
+1. Download the Windows package of CARLA 0.9.15 (or 0.9.16) from the
+   [CARLA releases page](https://github.com/carla-simulator/carla/releases) and extract it, e.g. to `C:\CARLA_0.9.15`.
+2. Set the environment variables (persisted for your user):
+   ```powershell
+   setx CARLA_ROOT "C:\CARLA_0.9.15"
+   setx PYTHONPATH "%PYTHONPATH%;C:\CARLA_0.9.15\PythonAPI\carla"
+   ```
+   Open a new terminal afterwards so they take effect.
+3. Install the matching Python client: `pip install carla==0.9.15`. If there is no wheel for your Python
+   version, install the one shipped in `PythonAPI\carla\dist` instead.
+4. Import the UT Lexus asset from the [carla_lexus release](https://github.com/UT-ADL/carla_lexus/releases)
+   using CARLA's asset import mechanism for the packaged Windows build (the Linux `ImportAssets.sh` step has no
+   verified Windows equivalent here yet).
+5. Install ScenarioRunner as in steps 12-14 above, setting `SCENARIO_RUNNER_ROOT` with `setx`.
+6. Clone VSE and install its requirements (`psutil` is installed automatically on Windows):
+   ```powershell
+   git clone https://github.com/UT-ADL/visual-scenario-editor.git
+   pip install -r visual-scenario-editor\requirements.txt
+   ```
+7. Run `python vse.py`. VSE finds `%CARLA_ROOT%\CarlaUE4.exe` automatically, or pass `--carla-path`.
+
+Settings are stored in `%LOCALAPPDATA%\vse` (`~/.cache/vse` on Linux). The CARLA server log goes to your temp
+directory (`carla_server.log`) unless `VSE_CARLA_SERVER_LOG` is set.
+
 ## Usage
 
 [![Watch the video](https://i.imgur.com/FaeVRuc.png)](https://www.youtube.com/watch?v=kjzwnp27A2o)
