@@ -861,12 +861,10 @@ def render_ui(editor):
     # Yellow "Agent:" label + agent mode dropdown (to the left of Play/Stop)
     agent_mode = getattr(editor, "agent_mode", "autopilot")
     agent_behavior = getattr(editor, "agent_behavior", "normal")
-    agent_mode_labels = {"autopilot": "Autopilot", "human": "Human", "custom": "Custom Agent"}
+    agent_mode_labels = {"autopilot": "Autopilot", "human": "Human", "external": "External Stack"}
     agent_mode_label = agent_mode_labels.get(agent_mode, "Autopilot")
     if agent_mode == "autopilot":
         agent_mode_label += f" ({agent_behavior.capitalize()})"
-    elif agent_mode == "custom" and getattr(editor, "agent_path", None):
-        agent_mode_label = os.path.basename(editor.agent_path)
     agent_label_surface = _render_text_cached(editor.small_font, agent_mode_label, True, editor.colors['text'])
     agent_button_width = max(140, agent_label_surface.get_width() + 24)
     agent_button_height = play_button_height
@@ -875,12 +873,7 @@ def render_ui(editor):
     agent_prefix_surface = _render_text_cached(editor.small_font, "Ego Agent:", True, (255, 255, 0))
     agent_prefix_width = agent_prefix_surface.get_width() + 6
 
-    # "..." browse button width (shown only in custom mode)
-    browse_button_width = 28
-    show_browse = (agent_mode == "custom")
-    browse_extra = (browse_button_width + 2) if show_browse else 0
-
-    agent_button_x = play_button_x - agent_button_width - button_spacing - browse_extra
+    agent_button_x = play_button_x - agent_button_width - button_spacing
     agent_prefix_x = agent_button_x - agent_prefix_width
     agent_button_rect = pygame.Rect(agent_button_x, play_button_y, agent_button_width, agent_button_height)
     is_agent_hovered = agent_button_rect.collidepoint(mouse_pos)
@@ -908,26 +901,6 @@ def render_ui(editor):
     editor.agent_button_enabled = bool(agent_button_enabled)
     if is_agent_hovered and editor.tooltip_manager:
         editor.tooltip_manager.register_hover("agent_button", agent_button_rect, TOP_UI_BUTTON_TOOLTIPS.get('agent', ''))
-
-    # "..." browse button (visible only in Custom Agent mode)
-    if show_browse:
-        browse_x = agent_button_rect.right + 2
-        browse_rect = pygame.Rect(browse_x, play_button_y, browse_button_width, agent_button_height)
-        is_browse_hovered = browse_rect.collidepoint(mouse_pos)
-        agent_browse_enabled = not scenario_active
-        if agent_browse_enabled:
-            browse_color = (80, 120, 170) if is_browse_hovered else (60, 90, 140)
-        else:
-            browse_color = (80, 80, 80)
-        pygame.draw.rect(editor.screen, browse_color, browse_rect, border_radius=6)
-        pygame.draw.rect(editor.screen, editor.colors['text'], browse_rect, 1, border_radius=6)
-        browse_label = _render_text_cached(editor.small_font, "...", True, editor.colors['text'])
-        editor.screen.blit(browse_label, browse_label.get_rect(center=browse_rect.center))
-        editor.agent_browse_button_rect = browse_rect
-        if is_browse_hovered and editor.tooltip_manager:
-            editor.tooltip_manager.register_hover("agent_browse_button", browse_rect, "Change custom agent script")
-    else:
-        editor.agent_browse_button_rect = None
 
     # ---- NPC Driving Mode dropdown (to the left of Agent) ----
     npc_mode_raw = editor.vehicle_control_mode
@@ -1002,7 +975,7 @@ def render_ui(editor):
         dropdown_items = [
             ("autopilot", "CARLA Autopilot", "CARLA BehaviorAgent drives the ego vehicle autonomously"),
             ("human", "Human Control", "Drive the ego vehicle manually with keyboard or steering wheel"),
-            ("custom", "Custom Agent", "Use an external agent script to control the ego vehicle"),
+            ("external", "External Stack", "Your own stack drives the ego vehicle (no agent file is loaded)"),
         ]
         item_height = play_button_height
         dropdown_width = agent_button_width
@@ -1046,9 +1019,9 @@ def render_ui(editor):
             dropdown_draw_ops.append((item_rect, draw_color, option_surface))
 
 
-    # A just-finished run can still be tearing down in the background (ROS-agent subprocess
-    # cancel/terminate/kill happens after results appear). The runner thread stays alive until
-    # that teardown completes, so gate Play on it: don't let a new run start until it's gone.
+    # A just-finished run can still be tearing down in the background (cleanup continues after
+    # results appear). The runner thread stays alive until that teardown completes, so gate Play
+    # on it: don't let a new run start until it's gone.
     _runner = getattr(editor, "_mini_runner", None)
     _runner_thread = getattr(_runner, "_thread", None)
     runner_busy = bool(_runner and not scenario_active and _runner_thread and _runner_thread.is_alive())
@@ -1059,12 +1032,12 @@ def render_ui(editor):
         play_button_color = (170, 80, 80) if is_play_hovered else (140, 60, 60)  # Red for stop
         play_button_enabled = True
     elif runner_busy:
-        # Previous run still shutting down (subprocess teardown); block Play until done.
+        # Previous run still shutting down; block Play until done.
         play_button_text = "Finishing…"
         play_button_color = (80, 80, 80)  # Gray, disabled
         play_button_enabled = False
     elif scenario_ready:
-        custom_blocked = (agent_mode == "custom" and not getattr(editor, '_external_ego_present_last_check', False))
+        custom_blocked = (agent_mode == "external" and not getattr(editor, '_external_ego_present_last_check', False))
         if custom_blocked:
             play_button_text = "Play"
             play_button_color = (80, 80, 80)
@@ -1088,10 +1061,10 @@ def render_ui(editor):
     editor.play_button_rect = play_button_rect
     editor.play_button_enabled = play_button_enabled
     if is_play_hovered and editor.tooltip_manager:
-        custom_blocked = (agent_mode == "custom" and not getattr(editor, '_external_ego_present_last_check', False))
+        custom_blocked = (agent_mode == "external" and not getattr(editor, '_external_ego_present_last_check', False))
         if custom_blocked and not scenario_active:
             editor.tooltip_manager.register_hover("play_button", play_button_rect,
-                "No external ego \u2014 select another agent", text_color=(230, 120, 120))
+                "No external ego \u2014 select another mode", text_color=(230, 120, 120))
         else:
             tooltip_key = 'stop' if scenario_active else 'play'
             editor.tooltip_manager.register_hover("play_button", play_button_rect, TOP_UI_BUTTON_TOOLTIPS.get(tooltip_key, ''))

@@ -1,5 +1,5 @@
 """MiniRunner — the in-process scenario runner (moved verbatim from
-vse_play.py): world/tick ownership (own vs ros), external-ego adoption,
+vse_play.py): world/tick ownership (own vs external), external-ego adoption,
 scenario-tree execution with the detached, leaf-ticked criteria tree,
 result-table emission and idempotent cleanup. Plus the scenario-data ego
 role helpers shared with the CLI.
@@ -11,7 +11,6 @@ import faulthandler
 import json
 import logging
 import math
-import multiprocessing
 import os
 import threading
 import time
@@ -30,7 +29,7 @@ from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 from srunner.scenariomanager.result_writer import ResultOutputProvider
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import Criterion, InRouteTest
 from srunner.scenariomanager.timer import GameTime
-from srunner.tools.route_manipulation import downsample_route, interpolate_trajectory
+from srunner.tools.route_manipulation import downsample_route
 
 from vse_common.env import env_float
 from vse_common.geometry import get_ground_height, is_large_map as _is_large_map
@@ -41,7 +40,6 @@ from srunner.scenariomanager.scenarioatomics.atomic_criteria import RouteComplet
 from vse_playback.models import RoutePoint, VehicleData
 from vse_playback.npc_agent import _NoopGlobalRoutePlanner, _NpcBasicAgent, _apply_npc_detection_tuning
 from vse_playback.ego_route_sink import EgoRouteSink
-from vse_playback.ros_publisher import _ros_plan_publisher_process
 from vse_playback.route import _compute_heading, _distance, _normalize_yaw, _refine_vehicle_route
 from vse_playback.scenario import vse_play
 from vse_playback.vehicle_control import VehicleController
@@ -172,7 +170,7 @@ class MiniRunner:
         client: carla.Client,
         world: carla.World,
         json_path: str,
-        tick_mode: str = "own",  # "own" or "ros"
+        tick_mode: str = "own",  # "own" (VSE ticks) or "external" (another process ticks the world)
         fixed_delta: float = 0.05,
         wait_for_ego: bool = False,
         ego_role_name: str = "ego_vehicle",
@@ -181,8 +179,6 @@ class MiniRunner:
         log_fn=None,
         debug: bool = False,
         on_finish=None,
-        ros_publish_delay: float = 1.5,
-        agent_path: Optional[str] = None,
         ego_route_sink: Optional[str] = None,
         agent_mode: str = "autopilot",
         agent_behavior: str = "normal",
@@ -203,28 +199,19 @@ class MiniRunner:
         self.log = log_fn or (lambda msg: print(f"[MiniRunner] {msg}"))
         self.debug = debug
         self.on_finish = on_finish
-        self.ros_publish_delay = max(0.0, float(ros_publish_delay))
-        self.agent_path = agent_path
         self._ego_route_sink = None
         if ego_route_sink:
             self._ego_route_sink = EgoRouteSink(ego_route_sink, log=lambda m: self.log(m))
-        self.agent_mode = agent_mode if agent_mode in ("autopilot", "human", "custom") else "autopilot"
+        self.agent_mode = agent_mode if agent_mode in ("autopilot", "human", "external") else "autopilot"
         self.agent_behavior = agent_behavior if agent_behavior in ("cautious", "normal", "aggressive") else "normal"
         self.vehicle_control_mode = vehicle_control_mode if vehicle_control_mode in ("basic_agent", "velocity") else "basic_agent"
         self._disable_ego_collision = bool(disable_ego_collision)
         self._disable_ego_physics = bool(disable_ego_physics)
-        self.ros_goal_interval = max(0.0, env_float("VSE_GOAL_INTERVAL", 0.25))
-        self.ros_downsample_interval = max(1.0, env_float("VSE_DOWNSAMPLE_INTERVAL", 42.0))
+        self.route_downsample_interval = max(1.0, env_float("VSE_DOWNSAMPLE_INTERVAL", 42.0))
         # Cache JSON waypoints once per runner instance
         self._route_json_waypoints: List[Tuple[float, float, float, float]] = []
         self._route_json_destination: Optional[carla.Location] = None
         self._full_route_for_criteria: Optional[List[Tuple[carla.Transform, RoadOption]]] = None
-        self._ros_agent_proc: Optional[multiprocessing.Process] = None
-        # Graceful cancel handshake with the agent subprocess: _stop_ros_agent_process sets
-        # cancel_now and waits for cancel_done so the route is cancelled while the agent is
-        # still healthy (clean /planning/cancel_route reply) instead of during SIGTERM teardown.
-        self._ros_agent_cancel_now = None
-        self._ros_agent_cancel_done = None
         self._prepped_ego_actor: Optional[carla.Actor] = None
         # Preview actors the editor destroyed right before Play: DestroyActor only
         # materializes on the next tick, so in a sync world with no tick source between
@@ -266,21 +253,11 @@ class MiniRunner:
         self._ego_prepare_failure: str = ""
         self._forced_green_lights: List[carla.Actor] = []
         self._large_map_active = False
-        self._skip_route_interpolation = False
         try:
             carla_map = world.get_map() if world else None
         except Exception:
             carla_map = None
         self._large_map_active = _is_large_map(carla_map)
-        # External-ego routes are published to the ROS agent (carla_minimal_agent) and consumed by
-        # autoware_mini's lanelet2 global planner, which re-routes on its own Lanelet2 map from the
-        # goal/via points and never reads the OpenDRIVE-interpolated corridor. The GRP/OpenDRIVE
-        # interpolation is therefore wasted work for that path, so skip it for any map size (not just
-        # large maps). Set VSE_FORCE_ROUTE_INTERPOLATION=1 to restore GRP interpolation — needed only
-        # if the route is consumed directly (e.g. autoware_mini global_planner:=carla).
-        self._skip_route_interpolation = (
-            os.environ.get("VSE_FORCE_ROUTE_INTERPOLATION") != "1"
-        )
 
     def _diag(self, message: str) -> None:
         if not self.debug:
@@ -313,19 +290,11 @@ class MiniRunner:
             self._diag("start: thread already alive")
             return
 
-        if self.tick_mode == "ros" and self.wait_for_ego:
-            if not self.agent_path and self._ego_route_sink is None:
-                self.log("External ego tick-mode is 'ros' but neither --agent nor an ego route sink "
-                         "(--ego-route-sink / VSE_EGO_ROUTE_SINK) was provided; aborting.")
-                return
-            # Ensure CarlaDataProvider is initialized *before* forking the ROS plan
-            # publisher process. The child process may call interpolate_trajectory(),
-            # which relies on CarlaDataProvider state; without this, first-run route
-            # publishes can degrade to “destination only”.
+        if self.tick_mode == "external" and self.wait_for_ego:
+            # An external stack drives the ego; there is no agent to load. The scenario's
+            # ego waypoints (if any) are optionally handed over via the ego route sink.
             try:
-                if self.world and not self._skip_route_interpolation:
-                    _init_carla_data_provider(self.world, self.client)
-                elif self.client:
+                if self.client:
                     CarlaDataProvider.set_client(self.client)
             except Exception:
                 pass
@@ -333,7 +302,7 @@ class MiniRunner:
             raw_waypoints, destination = self._load_json_waypoints()
             if raw_waypoints and not self._route_json_waypoints:
                 try:
-                    self._route_json_waypoints = self._build_route_for_ros(raw_waypoints)
+                    self._route_json_waypoints = self._build_route_cache(raw_waypoints)
                 except Exception:
                     self._route_json_waypoints = []
             if destination is None and self._route_json_waypoints:
@@ -352,7 +321,7 @@ class MiniRunner:
                         self.log("External ego requested but not found; aborting.")
                     return
                 self._prepped_ego_actor = ego_actor
-            self._start_minimal_agent_publish(raw_waypoints)
+            self._publish_ego_route_to_sink(raw_waypoints)
 
         self._diag("start: thread-create")
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -470,11 +439,11 @@ class MiniRunner:
             self._preflight_failure_reason = "stopped by user"
             return None
 
-        # Build a stable (no-GRP) route cache for criteria/weather and optional ROS publish.
+        # Build a stable (no-GRP) route cache for criteria/weather.
         if raw_waypoints:
             self._diag("run: build-route-cache")
             try:
-                self._route_json_waypoints = self._build_route_for_ros(raw_waypoints)
+                self._route_json_waypoints = self._build_route_cache(raw_waypoints)
             except Exception:
                 # Keep raw waypoints if route build fails.
                 self._route_json_waypoints = list(raw_waypoints)
@@ -678,7 +647,7 @@ class MiniRunner:
                     continue
                 first_dead_tick_t = None
 
-                # Only advance time/criteria once per real world frame. In ros tick-mode _tick_world
+                # Only advance time/criteria once per real world frame. In external tick-mode _tick_world
                 # falls back to world.get_snapshot() when wait_for_tick starves (e.g. the in-GUI
                 # MiniRunner thread losing the tick stream); that can return the same frame
                 # repeatedly, and processing it again would double-feed GameTime and busy-spin.
@@ -1101,48 +1070,6 @@ class MiniRunner:
             keyframes.append((100.0, keyframes[0][1]))
         return keyframes
 
-    def _start_minimal_agent_publish(self, raw_waypoints: List[Tuple[float, float, float, float]]) -> None:
-        """Spawn a one-off agent publisher in a child process."""
-        if not self.agent_path:
-            self._publish_ego_route_to_sink(raw_waypoints)
-            return
-        if not raw_waypoints or len(raw_waypoints) < 2:
-            self.log("No waypoints available for agent; skipping publish")
-            return
-        if not self.world:
-            self.log("World unavailable; cannot initialize agent publish")
-            return
-        if not self.agent_path:
-            self.log("Agent path unavailable; cannot initialize agent publish")
-            return
-
-        # Stop any previous publisher before starting a fresh one.
-        self._stop_ros_agent_process()
-
-        try:
-            cancel_now = multiprocessing.Event()
-            cancel_done = multiprocessing.Event()
-            proc = multiprocessing.Process(
-                target=_ros_plan_publisher_process,
-                args=(
-                    raw_waypoints,
-                    self.ros_downsample_interval,
-                    self.ros_publish_delay,
-                    self.agent_path,
-                    self._skip_route_interpolation,
-                    cancel_now,
-                    cancel_done,
-                ),
-                daemon=True,
-            )
-            proc.start()
-            self._ros_agent_proc = proc
-            self._ros_agent_cancel_now = cancel_now
-            self._ros_agent_cancel_done = cancel_done
-            self.log(f"Agent subprocess started (pid {proc.pid}) to publish route with {len(raw_waypoints)} points")
-        except Exception as exc:
-            self.log(f"Failed to launch agent subprocess: {exc}")
-
     def _publish_ego_route_to_sink(self, raw_waypoints) -> None:
         """Hand the scenario's ego waypoints to the external stack (no agent involved)."""
         sink = self._ego_route_sink
@@ -1165,51 +1092,6 @@ class MiniRunner:
             return
         self._ego_route_cancel_pending = False
         sink.send({"event": "cancel", "scenario": Path(self.json_path).stem, "timestamp": time.time()})
-
-    def _stop_ros_agent_process(self):
-        """Terminate any running agent subprocess."""
-        self._cancel_ego_route_sink()
-        proc = getattr(self, "_ros_agent_proc", None)
-        if not proc:
-            return
-        cancel_now = getattr(self, "_ros_agent_cancel_now", None)
-        cancel_done = getattr(self, "_ros_agent_cancel_done", None)
-        try:
-            if proc.is_alive():
-                # Graceful cancel first: ask the agent to cancel the route while it is still
-                # healthy (clean /planning/cancel_route reply, no "returned no response"),
-                # then terminate. Wait briefly for the cancel to complete.
-                if cancel_now is not None:
-                    try:
-                        cancel_now.set()
-                        if cancel_done is not None:
-                            cancel_done.wait(timeout=1.0)
-                    except Exception:
-                        pass
-                # Request graceful termination
-                proc.terminate()
-                # Wait briefly for graceful exit
-                proc.join(timeout=1.5)
-
-                # If still alive, force kill
-                if proc.is_alive():
-                    self.log("ROS agent process did not terminate gracefully, force killing...")
-                    proc.kill()
-                    # Wait briefly for kill to take effect
-                    proc.join(timeout=1.0)
-
-                # Final check
-                if proc.is_alive():
-                    self.log(f"WARNING: ROS agent process (pid {proc.pid}) could not be terminated")
-        except Exception as exc:
-            try:
-                self.log(f"Exception during ROS agent cleanup: {exc}")
-            except Exception:
-                pass
-        finally:
-            self._ros_agent_proc = None
-            self._ros_agent_cancel_now = None
-            self._ros_agent_cancel_done = None
 
     def _load_internal_ego_vehicle_data(self) -> Optional[VehicleData]:
         """Build VehicleData for the ego when running without external control."""
@@ -1396,95 +1278,44 @@ class MiniRunner:
         _refine_vehicle_route(vehicle_data, max_lat_acc=vehicle_data.max_lat_acc)
         return vehicle_data
 
-    def _build_route_for_ros(self, raw_waypoints: List[Tuple[float, float, float, float]]) -> List[Tuple[float, float, float, float]]:
-        """Downsample/interpolate waypoints along roads to mimic carla_minimal_agent planning and cache full route."""
+    def _build_route_cache(self, raw_waypoints: List[Tuple[float, float, float, float]]) -> List[Tuple[float, float, float, float]]:
+        """Cache the full waypoint corridor for criteria and return a downsampled copy for destination tracking."""
         if not raw_waypoints or len(raw_waypoints) < 2:
             return raw_waypoints
 
-        if self._skip_route_interpolation:
-            try:
-                self.log("Skipping road interpolation (default; set VSE_FORCE_ROUTE_INTERPOLATION=1 to enable); using waypoint corridor order.")
-            except Exception:
-                pass
-
-            route: List[Tuple] = []
-            for x, y, z, yaw in raw_waypoints:
-                try:
-                    tf = carla.Transform(
-                        carla.Location(x=float(x), y=float(y), z=float(z)),
-                        carla.Rotation(yaw=_normalize_yaw(float(yaw))),
-                    )
-                    route.append((tf, RoadOption.LANEFOLLOW))
-                except Exception:
-                    continue
-            try:
-                self._full_route_for_criteria = list(route) if len(route) >= 2 else None
-            except Exception:
-                self._full_route_for_criteria = None
-
-            sampled_route = route
-            try:
-                sampled_ids = downsample_route(route, self.ros_downsample_interval)
-                sampled_route = [route[i] for i in sampled_ids if 0 <= i < len(route)]
-            except Exception:
-                sampled_route = route
-
-            sampled: List[Tuple[float, float, float, float]] = []
-            for tf, _opt in sampled_route:
-                try:
-                    sampled.append(
-                        (
-                            float(tf.location.x),
-                            float(tf.location.y),
-                            float(tf.location.z),
-                            float(tf.rotation.yaw),
-                        )
-                    )
-                except Exception:
-                    continue
-            return sampled if sampled else raw_waypoints
-
-        keypoints: List[carla.Location] = []
-        for x, y, z, _yaw in raw_waypoints:
-            try:
-                keypoints.append(carla.Location(x=float(x), y=float(y), z=float(z)))
-            except Exception as exc:
-                self.log(f"Location build failed for ({x},{y},{z}): {exc}")
-        if len(keypoints) >= 2:
-            try:
-                gps_route, route = interpolate_trajectory(keypoints, hop_resolution=1.0)
-                try:
-                    self._full_route_for_criteria = list(route)
-                except Exception:
-                    self._full_route_for_criteria = None
-                sampled_ids = downsample_route(route, self.ros_downsample_interval)
-                sampled: List[Tuple[float, float, float, float]] = []
-                for idx in sampled_ids:
-                    if idx < 0 or idx >= len(route):
-                        continue
-                    tf = route[idx][0]  # Transform
-                    sampled.append(
-                        (
-                            float(tf.location.x),
-                            float(tf.location.y),
-                            float(tf.location.z),
-                            float(tf.rotation.yaw),
-                        )
-                    )
-                if sampled:
-                    self.log(
-                        f"Interpolated route built with {len(route)} points; "
-                        f"downsampled to {len(sampled)} for ROS publish"
-                    )
-                    return sampled
-            except Exception as exc:
-                self.log(f"Route interpolation failed; using raw waypoints: {exc}")
-
-        # Fallback: raw waypoints as transforms
-        sampled: List[Tuple[float, float, float, float]] = []
+        route: List[Tuple] = []
         for x, y, z, yaw in raw_waypoints:
             try:
-                sampled.append((float(x), float(y), float(z), float(yaw)))
+                tf = carla.Transform(
+                    carla.Location(x=float(x), y=float(y), z=float(z)),
+                    carla.Rotation(yaw=_normalize_yaw(float(yaw))),
+                )
+                route.append((tf, RoadOption.LANEFOLLOW))
+            except Exception:
+                continue
+        try:
+            self._full_route_for_criteria = list(route) if len(route) >= 2 else None
+        except Exception:
+            self._full_route_for_criteria = None
+
+        sampled_route = route
+        try:
+            sampled_ids = downsample_route(route, self.route_downsample_interval)
+            sampled_route = [route[i] for i in sampled_ids if 0 <= i < len(route)]
+        except Exception:
+            sampled_route = route
+
+        sampled: List[Tuple[float, float, float, float]] = []
+        for tf, _opt in sampled_route:
+            try:
+                sampled.append(
+                    (
+                        float(tf.location.x),
+                        float(tf.location.y),
+                        float(tf.location.z),
+                        float(tf.rotation.yaw),
+                    )
+                )
             except Exception:
                 continue
         return sampled if sampled else raw_waypoints
@@ -1805,7 +1636,7 @@ class MiniRunner:
             for attempt in range(10):
                 try:
                     # Let the world progress so external ego can be registered
-                    if self.tick_mode == "ros":
+                    if self.tick_mode == "external":
                         self.world.wait_for_tick(0.2)
                     else:
                         self.world.tick()
@@ -2065,7 +1896,7 @@ class MiniRunner:
         # stall on the client timeout (the 60 s ego-destroy in particular),
         # just moving the 5 h hang into cleanup. Tighten the client timeout so
         # each RPC fails fast; the ordering (destroy -> restore -> on_finish ->
-        # ROS teardown) is untouched — only the per-call timeout shrinks. The
+        # route cancel) is untouched — only the per-call timeout shrinks. The
         # actors/settings die with the server anyway.
         lost = getattr(self, "_server_lost", False)
         if lost and self.client:
@@ -2116,17 +1947,14 @@ class MiniRunner:
             self._restore_weather = None
             self._restore_sync_settings()
         self.log(f"Scenario ended ({reason or 'finished'})")
-        # Show the results (on_finish opens the result dialog) BEFORE tearing down the ROS agent
-        # subprocess, whose graceful route-cancel + terminate can take a few seconds. This removes
-        # that delay from the user-visible "results appear" time for the external/VIL ego. The local
-        # agent has no such subprocess, so its ordering is unaffected.
+        # Show the results (on_finish opens the result dialog) first, then tell the external stack to cancel.
         if self.on_finish:
             try:
                 self.on_finish(reason or "finished")
             except Exception:
                 pass
         try:
-            self._stop_ros_agent_process()
+            self._cancel_ego_route_sink()
         except Exception:
             pass
 

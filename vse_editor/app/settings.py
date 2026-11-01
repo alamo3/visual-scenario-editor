@@ -116,9 +116,8 @@ def _remember_last_remote(editor, host: str, port: Union[str, int, None]) -> Non
     editor.last_remote_port = payload['port']
 
 def _load_last_agent_cache(editor) -> None:
-    """Load cached playback agent path, mode, and behavior from the unified settings file."""
-    editor.agent_path: Optional[str] = None
-    editor.agent_mode: str = "autopilot"       # "autopilot" | "human" | "custom"
+    """Load the cached ego control mode and autopilot behavior from the unified settings file."""
+    editor.agent_mode: str = "autopilot"       # "autopilot" | "human" | "external"
     editor.agent_behavior: str = "normal"       # "cautious" | "normal" | "aggressive"
     try:
         from agents.navigation import behavior_agent as _ba_mod
@@ -126,65 +125,25 @@ def _load_last_agent_cache(editor) -> None:
     except Exception:
         editor._behavior_agent_path = "agents/navigation/behavior_agent.py"
     data = editor._read_settings_section('agent')
-    path = data.get('path')
     mode = data.get('mode')
     behavior = data.get('behavior')
-    if mode in ("autopilot", "human", "custom"):
+    if mode == "custom":
+        mode = "external"  # legacy name from when this mode loaded an agent script
+    if mode in ("autopilot", "human", "external"):
         editor.agent_mode = mode
     if behavior in ("cautious", "normal", "aggressive"):
         editor.agent_behavior = behavior
-    if path and os.path.isfile(path):
-        editor.agent_path = os.path.abspath(path)
-        return
-    if editor.agent_mode == "custom":
-        # Custom agent path no longer valid; fall back to autopilot
+    if editor.agent_mode == "external":
+        # External mode needs a connected external ego; start from autopilot until one appears.
         editor.agent_mode = "autopilot"
-    editor._clear_last_agent_cache(remove_file=True)
 
-def _remember_last_agent(editor, agent_path: Optional[str] = None) -> None:
-    """Persist the most recently used playback agent path, mode, and behavior."""
-    if agent_path and os.path.isfile(agent_path):
-        editor.agent_path = os.path.abspath(agent_path)
-    payload: Dict[str, Any] = {
+def _remember_last_agent(editor) -> None:
+    """Persist the ego control mode and autopilot behavior."""
+    editor._write_settings_section('agent', {
         'mode': editor.agent_mode,
         'behavior': editor.agent_behavior,
         'updated': time.time(),
-    }
-    if editor.agent_path:
-        payload['path'] = editor.agent_path
-        payload['directory'] = os.path.dirname(editor.agent_path)
-    else:
-        # Preserve last-used directory for the file picker
-        existing_dir = editor._get_last_agent_directory()
-        if existing_dir:
-            payload['directory'] = existing_dir
-    editor._write_settings_section('agent', payload)
-
-def _clear_last_agent_cache(editor, *, remove_file: bool = False) -> None:
-    """Clear cached playback agent path but preserve directory, mode, and behavior."""
-    editor.agent_path = None
-    if remove_file:
-        existing = editor._read_settings_section('agent')
-        existing_dir = existing.get('directory') or (
-            os.path.dirname(existing.get('path', '')) if existing.get('path') else None
-        )
-        payload: Dict[str, Any] = {
-            'mode': editor.agent_mode,
-            'behavior': editor.agent_behavior,
-        }
-        if existing_dir and os.path.isdir(existing_dir):
-            payload['directory'] = existing_dir
-        editor._write_settings_section('agent', payload)
-
-def _get_last_agent_directory(editor) -> Optional[str]:
-    """Return the last used agent directory from the unified settings file, if available."""
-    data = editor._read_settings_section('agent')
-    directory = data.get('directory')
-    if not directory and data.get('path'):
-        directory = os.path.dirname(data['path'])
-    if directory and os.path.isdir(directory):
-        return directory
-    return None
+    })
 
 def _load_last_scenario_cache(editor) -> None:
     """Load cached recent scenario reference from the unified settings file if available."""

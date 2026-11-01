@@ -72,9 +72,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--client-timeout", type=float, default=env_float("CARLA_TIMEOUT", 10.0))
     parser.add_argument(
         "--tick-mode",
-        choices=("auto", "own", "ros"),
+        choices=("auto", "own", "external"),
         default="auto",
-        help="World tick source: auto (match VSE), own (call world.tick), ros (wait_for_tick).",
+        help="World tick source: auto (match VSE), own (call world.tick), external (another process ticks the world; VSE waits for the tick).",
     )
     parser.add_argument(
         "--fixed-delta",
@@ -105,12 +105,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Where to send the scenario's ego waypoints when an external stack drives the ego "
              "(no agent is loaded): 'none', 'file:<path>', or an http(s) URL that receives JSON POSTs. "
              "Defaults to $VSE_EGO_ROUTE_SINK.",
-    )
-    parser.add_argument(
-        "--agent",
-        type=str,
-        default=None,
-        help="Path to a ScenarioRunner-compatible agent Python file (for an external ego, required unless --ego-route-sink / VSE_EGO_ROUTE_SINK is set).",
     )
     parser.add_argument("--debug", action="store_true")
     return parser
@@ -184,7 +178,7 @@ def _resolve_external_ego(
             parser.error(f"External ego actor id {args.external_ego_actor_id} not found/alive in world.")
         external_ego_id = int(args.external_ego_actor_id)
         external_ego_actor = actor
-    elif args.tick_mode in ("auto", "ros") or args.wait_for_ego:
+    elif args.tick_mode in ("auto", "external") or args.wait_for_ego:
         # Auto-detect an already-spawned ego and use it as the ego vehicle source + tick authority.
         external_actor = _find_external_ego(world, expected_roles, blueprint_id=ego_blueprint_id)
 
@@ -216,45 +210,25 @@ def _resolve_external_ego(
     return scenario_has_ego, external_ego_id, external_ego_actor
 
 
-def _resolve_tick_mode_and_agent(
+def _resolve_tick_mode(
     parser: argparse.ArgumentParser,
     *,
     args: argparse.Namespace,
     scenario_has_ego: bool,
     external_ego_id: Optional[int],
-) -> Tuple[str, Optional[str], bool]:
+) -> Tuple[str, bool]:
     tick_mode = args.tick_mode
     if tick_mode == "auto":
-        tick_mode = "ros" if external_ego_id is not None else "own"
+        tick_mode = "external" if external_ego_id is not None else "own"
 
-    if tick_mode == "ros" and external_ego_id is None:
-        parser.error("Tick mode 'ros' requires an external ego vehicle, but none was detected in the world.")
-
-    if tick_mode == "ros":
-        if not args.agent and not sink_spec_from_env(args.ego_route_sink):
-            parser.error(
-                "External ego detected; pass --agent /path/to/agent.py, or --ego-route-sink "
-                "(none | file:<path> | http(s)://<url>) / VSE_EGO_ROUTE_SINK when your own stack drives the ego."
-            )
-    else:
-        if args.agent:
-            parser.error("--agent was provided but no external ego is in use (tick-mode is not 'ros').")
-
-    agent_path: Optional[str] = None
-    if args.agent:
-        try:
-            agent_candidate = Path(str(args.agent)).expanduser().resolve()
-        except Exception:
-            agent_candidate = None
-        if not agent_candidate or not agent_candidate.exists() or not agent_candidate.is_file():
-            parser.error(f"Agent file not found: {args.agent}")
-        agent_path = str(agent_candidate)
+    if tick_mode == "external" and external_ego_id is None:
+        parser.error("Tick mode 'external' requires an external ego vehicle, but none was detected in the world.")
 
     wait_for_ego = bool(args.wait_for_ego or args.external_ego_actor_id is not None)
     if not wait_for_ego:
-        wait_for_ego = bool(tick_mode == "ros" and scenario_has_ego and external_ego_id is not None)
+        wait_for_ego = bool(tick_mode == "external" and scenario_has_ego and external_ego_id is not None)
 
-    return tick_mode, agent_path, wait_for_ego
+    return tick_mode, wait_for_ego
 
 
 def _resolve_fixed_delta(world: carla.World, fixed_delta_arg: Optional[float]) -> float:
@@ -289,7 +263,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args=args,
         scenario_data=scenario_data,
     )
-    tick_mode, agent_path, wait_for_ego = _resolve_tick_mode_and_agent(
+    tick_mode, wait_for_ego = _resolve_tick_mode(
         parser,
         args=args,
         scenario_has_ego=scenario_has_ego,
@@ -330,7 +304,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_fn=lambda msg: print(f"[MiniRunner] {msg}"),
         debug=bool(args.debug),
         on_finish=_on_finish,
-        agent_path=agent_path,
         ego_route_sink=sink_spec_from_env(args.ego_route_sink),
     )
 

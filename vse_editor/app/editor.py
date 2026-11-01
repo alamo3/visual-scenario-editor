@@ -1070,14 +1070,8 @@ class VisualScenarioEditor:
     def _load_last_agent_cache(self) -> None:
         return settings_app._load_last_agent_cache(self)
 
-    def _remember_last_agent(self, agent_path: Optional[str] = None) -> None:
-        return settings_app._remember_last_agent(self, agent_path)
-
-    def _clear_last_agent_cache(self, *, remove_file: bool = False) -> None:
-        return settings_app._clear_last_agent_cache(self, remove_file=remove_file)
-
-    def _get_last_agent_directory(self) -> Optional[str]:
-        return settings_app._get_last_agent_directory(self)
+    def _remember_last_agent(self) -> None:
+        return settings_app._remember_last_agent(self)
 
     def _load_last_scenario_cache(self) -> None:
         return settings_app._load_last_scenario_cache(self)
@@ -1146,9 +1140,6 @@ class VisualScenarioEditor:
 
     def _prompt_scenario_file_path(self, *, initial_path: Optional[str] = None) -> Optional[str]:
         return scenario_files._prompt_scenario_file_path(self, initial_path=initial_path)
-
-    def _prompt_agent_file_path(self, *, initial_path: Optional[str] = None) -> Optional[str]:
-        return scenario_files._prompt_agent_file_path(self, initial_path=initial_path)
 
     def _prompt_startup_map_choice(self, options: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
         return scenario_files._prompt_startup_map_choice(self, options)

@@ -40,7 +40,7 @@ except ImportError:  # CARLA 0.9.15 ships no agents/tools/hints.py; its stock bo
 
 # =============================================================================
 # ROUTE PLANNING HELPERS
-# GlobalRoutePlanner wrapper, ROS plan publishing, traffic light matching
+# GlobalRoutePlanner wrapper, traffic light matching
 # =============================================================================
 
 

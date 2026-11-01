@@ -227,7 +227,7 @@ In the top bar (left of **Play**), click the **Agent** dropdown:
 
 - **CARLA Autopilot** (default): Drives automatically. Pick a driving style: Cautious, Normal, or Aggressive.
 - **Human Control**: You drive with arrow keys.
-- **Custom Agent**: Select an external agent `.py` script (requires an external ego vehicle).
+- **External Stack**: Your own stack drives the ego (requires an external ego vehicle; no agent file is loaded).
 
 You can't change the agent while a scenario is running.
 
@@ -253,11 +253,11 @@ Expect:
 - The current view shows on the top-right status line, and your last choice is remembered across restarts (default: **Chase**).
 - To stop the run while the UI is hidden, just press **Escape**.
 
-## Optional: Running with an External Ego (Autoware Mini / VIL)
+## Optional: Running with an External Ego (VIL)
 
-VSE can edit and play scenarios while an external self-driving stack (e.g. Autoware Mini) drives the ego. This works whether that stack runs CARLA in **synchronous** mode or in **asynchronous / vehicle-in-the-loop (VIL)** mode — you do not have to put the server in synchronous mode for VSE to find the ego.
+VSE can edit and play scenarios while an external self-driving stack (e.g. a ROS 2 stack in Docker) drives the ego. This works whether that stack runs CARLA in **synchronous** mode or in **asynchronous / vehicle-in-the-loop (VIL)** mode — you do not have to put the server in synchronous mode for VSE to find the ego.
 
-- **Connect**: launch the external stack. Expect VSE to detect the external ego automatically (it adopts any vehicle whose `role_name` is `ego_vehicle`/`hero`) and follow it. Your editor ego becomes a non-selectable placeholder marking the start position, and the **Ego Agent** dropdown locks to **Custom Agent**.
+- **Connect**: launch the external stack. Expect VSE to detect the external ego automatically (it adopts any vehicle whose `role_name` is `ego_vehicle`/`hero`) and follow it. Your editor ego becomes a non-selectable placeholder marking the start position, and the **Ego Agent** dropdown locks to **External Stack**. If the scenario has ego waypoints, VSE can send them to your stack as a destination — see "External ego driven by your own stack" in the README.
 - **For a VIL ego**, untick **Ego Physics** (top-right) so VSE leaves CARLA physics off — otherwise gravity/collision fight the external stack's per-tick teleport and the car jitters or sinks.
 - **Disconnect**: close the external stack. Expect VSE to notice within a few seconds, restore a local ego so you can keep editing, and return the world to asynchronous mode.
 

@@ -7,8 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Agent-less external ego: `--ego-route-sink` / `VSE_EGO_ROUTE_SINK` (`none`, `file:<path>`, or an http(s) URL) lets a user-owned stack drive the ego without VSE loading an agent file. If the scenario defines ego waypoints they are delivered as a JSON `route` event (with the destination) and a `cancel` event on stop; the editor no longer prompts for an agent file when a sink is configured
+- Agent-less external ego: `--ego-route-sink` / `VSE_EGO_ROUTE_SINK` (`none`, `file:<path>`, or an http(s) URL) lets a user-owned stack drive the ego without VSE loading an agent file. If the scenario defines ego waypoints they are delivered as a JSON `route` event (with the destination) and a `cancel` event on stop; a sink is optional — without one nothing is sent
 - `vse_common/platform_utils.py`: OS-specific CARLA server process management (Windows support groundwork; `psutil` is required on Windows)
+
+### Removed
+- ROS 1 / Autoware Mini support: `--agent`, the agent-file picker and "Custom Agent" mode, and the forked `rospy` route publisher (`vse_playback/ros_publisher.py`) are gone. The ego mode formerly called "Custom Agent" is now "External Stack", and the runner tick mode `ros` is now `external` (CLI `--tick-mode external`)
 
 ## [1.3.0] - 2026-07-16
 

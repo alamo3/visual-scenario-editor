@@ -309,13 +309,12 @@ def _maybe_open_result_window(editor):
     )
 
 def _reap_finished_runner(editor):
-    """Clear the MiniRunner handle once its thread (and ROS-agent subprocess) is fully gone.
+    """Clear the MiniRunner handle once its thread is fully gone.
 
-    on_finish fires from MiniRunner._cleanup *before* _stop_ros_agent_process(), so the
-    runner thread is still alive (and the subprocess still shutting down) when the results
-    appear. We keep self._mini_runner set until that thread dies — which only happens after
-    _cleanup completes — so the Play button stays disabled ("Finishing…") until a new run is
-    safe to start. This is the moment the subprocess is guaranteed dead.
+    on_finish fires from MiniRunner._cleanup before teardown completes, so the runner
+    thread is still alive when the results appear. We keep self._mini_runner set until that
+    thread dies — which only happens after _cleanup completes — so the Play button stays
+    disabled ("Finishing…") until a new run is safe to start.
     """
     runner = getattr(editor, "_mini_runner", None)
     if not runner or editor.scenario_running:
@@ -762,24 +761,9 @@ def run_scenario(editor):
             timeout_seconds = 18000.0
         timeout_seconds = max(timeout_seconds, 30.0)
 
-        tick_mode = "ros" if (scenario_has_ego and external_ego_present) else "own"
-        wait_for_ego = tick_mode == "ros"
-        agent_path = None
+        tick_mode = "external" if (scenario_has_ego and external_ego_present) else "own"
+        wait_for_ego = tick_mode == "external"
         ego_route_sink = sink_spec_from_env()
-        if tick_mode == "ros" and not ego_route_sink:
-            candidate = getattr(editor, "agent_path", None)
-            if candidate and not os.path.isfile(candidate):
-                editor._clear_last_agent_cache(remove_file=True)
-                candidate = None
-            if not candidate:
-                candidate = editor._prompt_agent_file_path()
-                if not candidate:
-                    print("[Agent] Scenario run cancelled: external ego playback requires an agent file.")
-                    editor._restore_all_scene_vehicles_once()
-                    return
-                editor.agent_mode = "custom"
-                editor._remember_last_agent(candidate)
-            agent_path = candidate
         fixed_delta = 0.05
         try:
             settings = editor.world.get_settings() if editor.world else None
@@ -816,10 +800,9 @@ def run_scenario(editor):
             editor.scenario_running = False
             editor.scenario_stop_requested = False
             # NOTE: do NOT clear editor._mini_runner here. on_finish fires from
-            # MiniRunner._cleanup *before* _stop_ros_agent_process() tears down the
-            # ROS-agent subprocess, and the runner thread is still alive at this point.
-            # Keep the handle so the Play button stays disabled ("Finishing…") until the
-            # thread (and thus the subprocess) is fully torn down; _reap_finished_runner()
+            # MiniRunner._cleanup before its teardown finishes, and the runner thread is
+            # still alive at this point. Keep the handle so the Play button stays disabled
+            # ("Finishing…") until the thread is fully torn down; _reap_finished_runner()
             # clears it once editor._mini_runner._thread is no longer alive.
             editor._debug_camera_pose("post-run restore")
             if editor.camera_processor:
@@ -885,7 +868,6 @@ def run_scenario(editor):
             log_fn=_log_fn,
             debug=getattr(editor, "debug_mode", False),
             on_finish=_on_finish,
-            agent_path=agent_path,
             ego_route_sink=ego_route_sink,
             agent_mode=ego_agent_mode,
             agent_behavior=ego_agent_behavior,

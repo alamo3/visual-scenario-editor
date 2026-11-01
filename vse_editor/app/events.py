@@ -3,7 +3,6 @@
 Moved verbatim from vse.py (step-36, Phase 7).
 """
 
-import os
 from typing import Any, Tuple
 
 import pygame
@@ -302,7 +301,7 @@ def _handle_open_top_bar_dropdown_item_click(
         for behavior, rect in getattr(editor, "_agent_behavior_item_rects", {}).items():
             if rect.collidepoint(pos):
                 editor.agent_behavior = behavior
-                editor._remember_last_agent(getattr(editor, "agent_path", None))
+                editor._remember_last_agent()
                 print(f"[Agent] Behavior set to: {behavior}")
                 editor.agent_behavior_menu_open = False
                 return True
@@ -312,18 +311,10 @@ def _handle_open_top_bar_dropdown_item_click(
         for item_rect, mode_key in getattr(editor, "_agent_dropdown_item_rects", []):
             if not item_rect.collidepoint(pos):
                 continue
-            if mode_key == "custom":
-                existing = getattr(editor, "agent_path", None)
-                if existing and os.path.isfile(existing):
-                    editor.agent_mode = "custom"
-                    editor._remember_last_agent(existing)
-                    print(f"[Agent] Custom agent restored: {existing}")
-                else:
-                    picked = editor._prompt_agent_file_path()
-                    if picked:
-                        editor.agent_mode = "custom"
-                        editor._remember_last_agent(picked)
-                        print(f"[Agent] Custom agent selected: {picked}")
+            if mode_key == "external":
+                editor.agent_mode = "external"
+                editor._remember_last_agent()
+                print("[Agent] Mode set to: external stack")
                 editor.agent_dropdown_open = False
             elif mode_key == "autopilot":
                 editor.agent_mode = "autopilot"
@@ -590,18 +581,6 @@ def _handle_left_click(editor, pos, scenario_running):
             editor.agent_behavior_menu_open = False
         editor.resolution_menu_open = False
         editor.fps_menu_open = False
-        return True
-
-    # "..." browse button click (change custom agent script)
-    if (getattr(editor, 'agent_browse_button_rect', None)
-            and editor.agent_browse_button_rect.collidepoint(pos)
-            and not getattr(editor, "scenario_running", False)):
-        picked = editor._prompt_agent_file_path()
-        if picked:
-            editor._remember_last_agent(picked)
-            print(f"[Agent] Custom agent changed: {picked}")
-        editor.agent_dropdown_open = False
-        editor.agent_behavior_menu_open = False
         return True
 
     if getattr(editor, 'agent_button_rect', None) and editor.agent_button_rect and editor.agent_button_rect.collidepoint(pos):

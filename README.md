@@ -134,29 +134,12 @@ Run a saved scenario on existing Carla server:
 python vse_play.py path/to/scenario.json
 ```
 
-Run a saved scenario on existing Carla server with external agent:
+Run a saved scenario on an existing Carla server whose ego is driven by an external stack:
 ```bash
-python vse_play.py scenario.json --agent /path/to/my_agent.py
+python vse_play.py scenario.json
 ```
 
 For further instructions check the [tutorial](tutorial.md) — the beginner walkthrough.
-
-
-### Launching VSE with Autoware Mini
-
-Set up [Autoware Mini](https://github.com/UT-ADL/autoware_mini)
-
-
-Launch the editor:
-```bash
-python vse.py
-```
-Launch Autoware Mini
-```
-roslaunch autoware_mini start_carla.launch use_scenario_runner:=true map_name:="name_of_a_map"
-```
-
-Use the Play button in VSE
 
 
 ### External ego driven by your own stack
@@ -172,7 +155,8 @@ python vse.py
 
 VSE sends JSON events: `{"event": "route", "scenario", "map", "waypoints": [{x,y,z,yaw}...], "destination": {...}}`
 when playback starts and `{"event": "cancel"}` when it stops. The same option exists on the CLI as
-`--ego-route-sink`. Without a sink or `--agent`, external-ego playback still requires an agent as before.
+`--ego-route-sink`. Without a sink nothing is sent. VSE itself has no ROS dependency: it never loads an agent
+file, so your stack (ROS 1, ROS 2, anything) is entirely on your side of the sink.
 
 ## Changelog
 

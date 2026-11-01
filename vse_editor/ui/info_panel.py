@@ -871,7 +871,7 @@ class InfoPanel:
                         if editor:
                             editor.agent_behavior = behavior
                             if hasattr(editor, '_remember_last_agent'):
-                                editor._remember_last_agent(getattr(editor, 'agent_path', None))
+                                editor._remember_last_agent()
                             print(f"[Agent] Behavior set to: {behavior}")
                 return True
 

@@ -655,8 +655,8 @@ def _maybe_prompt_external_ego_swap(editor, actor: Optional[carla.Actor]) -> Non
         print(f"[External Ego] Auto-adopting external ego actor {actor.id}")
     except Exception:
         pass
-    # Lock agent mode to custom when external ego is connected
-    editor.agent_mode = "custom"
+    # Lock agent mode to external when an external ego is connected
+    editor.agent_mode = "external"
     editor._remember_last_agent()
     editor._perform_external_ego_swap(actor)
 
