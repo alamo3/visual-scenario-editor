@@ -20,6 +20,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 import carla
 
 from vse_common.actor_cache import clear_bounding_box_cache
+from vse_common.ego import DEFAULT_EGO_BLUEPRINT
 from vse_common.env import env_bool, env_float
 from vse_common.traffic_lights import (
     compute_traffic_light_fingerprint,
@@ -1387,7 +1388,7 @@ class CameraImageProcessor:
             return None
 
         ego_data = {
-            "type": self.ego_vehicle_blueprint or "vehicle.lexus.utlexus",
+            "type": self.ego_vehicle_blueprint or DEFAULT_EGO_BLUEPRINT,
             "location": {
                 "x": transform.location.x,
                 "y": transform.location.y,

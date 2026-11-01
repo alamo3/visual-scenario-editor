@@ -17,6 +17,8 @@ from typing import Optional, Tuple
 import carla
 import pygame
 
+from vse_common.ego import DEFAULT_EGO_BLUEPRINT, EGO_BLUEPRINT_IDS
+
 
 def request_manual_control(processor) -> None:
     """Begin watching for an ego vehicle to attach for manual control."""
@@ -246,8 +248,8 @@ def _find_manual_control_actor(processor) -> Optional[carla.Actor]:
     if not expected_blueprints and scenario_blueprint:
         expected_blueprints.append(scenario_blueprint)
     if not expected_blueprints:
-        # Fallback to the default Lexus blueprint used by the editor when no info is cached.
-        expected_blueprints.append('vehicle.lexus.utlexus')
+        # Fallback to the default ego blueprint used by the editor when no info is cached.
+        expected_blueprints.append(DEFAULT_EGO_BLUEPRINT)
 
     fallback_candidates = []
     for actor in actors:
@@ -270,7 +272,7 @@ def _find_manual_control_actor(processor) -> Optional[carla.Actor]:
         if location.z < -100.0:
             continue
         blueprint_match = actor.type_id in expected_blueprints
-        if not blueprint_match and actor.type_id == 'vehicle.lexus.utlexus':
+        if not blueprint_match and actor.type_id in EGO_BLUEPRINT_IDS:
             blueprint_match = True
         if not blueprint_match:
             continue

@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Windows editor relaunch handoff: the new editor signals "ready" through a marker file (`VSE_HANDOFF_FILE`) instead of an inherited pipe; the POSIX pipe path is unchanged
 - Windows: settings are stored in `%LOCALAPPDATA%\vse`; README gains an experimental Windows install section
 
+### Changed
+- The UT Lexus asset is no longer required: the default ego is the stock `vehicle.lincoln.mkz_2020`, and scenarios that name `vehicle.lexus.utlexus` fall back to it when that blueprint is not installed (`vse_common/ego.py`)
+
 ### Removed
 - ROS 1 / Autoware Mini support: `--agent`, the agent-file picker and "Custom Agent" mode, and the forked `rospy` route publisher (`vse_playback/ros_publisher.py`) are gone. The ego mode formerly called "Custom Agent" is now "External Stack", and the runner tick mode `ros` is now `external` (CLI `--tick-mode external`)
 

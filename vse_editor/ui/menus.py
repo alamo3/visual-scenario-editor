@@ -15,6 +15,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union, cast
 import carla
 import pygame
 
+from vse_common.ego import DEFAULT_EGO_BLUEPRINT, EGO_BLUEPRINT_IDS, resolve_ego_blueprint_id
 from vse_editor.scene_types import TrafficLightGroupData
 from vse_editor.ui.widgets import TooltipManager
 
@@ -307,7 +308,6 @@ class ActorSelectionMenu:
 class VehicleSelectionMenu(ActorSelectionMenu):
     """Vehicle-specific selection menu wrapper."""
 
-    _EGO_MODEL_ID = "vehicle.lexus.utlexus"
     _SPAWNED_HEADER_MARGIN = 18
     _SPAWNED_HEADER_HEIGHT = 24
     _SPAWNED_BOTTOM_PADDING = 30
@@ -349,10 +349,11 @@ class VehicleSelectionMenu(ActorSelectionMenu):
         self.initialize(world)
 
         # Remove ego blueprint from NPC list if present
-        if self._EGO_MODEL_ID in self.available_ids:
-            idx = self.available_ids.index(self._EGO_MODEL_ID)
-            del self.available_ids[idx]
-            del self.display_names[idx]
+        for ego_id in EGO_BLUEPRINT_IDS:
+            if ego_id in self.available_ids:
+                idx = self.available_ids.index(ego_id)
+                del self.available_ids[idx]
+                del self.display_names[idx]
         if self.available_ids:
             self.selected_index = min(self.selected_index, len(self.available_ids) - 1)
         else:
@@ -377,7 +378,7 @@ class VehicleSelectionMenu(ActorSelectionMenu):
                 continue
             if actor.type_id.startswith('walker.'):
                 continue
-            if actor.type_id == self._EGO_MODEL_ID:
+            if actor.type_id in EGO_BLUEPRINT_IDS:
                 continue
             if processor.is_ego_vehicle(actor.id):
                 continue
@@ -590,7 +591,7 @@ class VehicleSelectionMenu(ActorSelectionMenu):
 class EgoVehicleSelectionMenu(ActorSelectionMenu):
     """Selection menu for ego vehicle placement (single blueprint)."""
 
-    _MODEL_ID = "vehicle.lexus.utlexus"
+    _MODEL_ID = DEFAULT_EGO_BLUEPRINT
     _EGO_HEADER_MARGIN = 18
     _EGO_HEADER_HEIGHT = 24
     _EGO_ROW_HEIGHT = 28
@@ -601,7 +602,7 @@ class EgoVehicleSelectionMenu(ActorSelectionMenu):
             title="Ego Vehicle",
             blueprint_filter=self._MODEL_ID,
             fallback_id=self._MODEL_ID,
-            fallback_name="Lexus Ego Vehicle",
+            fallback_name="Ego Vehicle",
             display_transform=self._format_vehicle_name
         )
         self._camera_processor_ref: Optional["weakref.ReferenceType[CameraImageProcessor]"] = None
@@ -637,9 +638,9 @@ class EgoVehicleSelectionMenu(ActorSelectionMenu):
     def initialize_ego_vehicle(self, world):
         try:
             blueprint_library = world.get_blueprint_library()
-            blueprint_library.find(self._MODEL_ID)  # Ensure blueprint exists
-            self.available_ids = [self._MODEL_ID]
-            self.display_names = [self._format_vehicle_name(self._MODEL_ID)]
+            model_id = resolve_ego_blueprint_id(blueprint_library, self._MODEL_ID)
+            self.available_ids = [model_id]
+            self.display_names = [self._format_vehicle_name(model_id)]
             self.selected_index = 0
             self.scroll_offset = 0
         except Exception as exc:

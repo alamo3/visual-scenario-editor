@@ -27,8 +27,7 @@ or the **stock** CARLA ScenarioRunner shipped for 0.9.15 or 0.9.16. Point `SCENA
 at whichever you have installed — VSE adapts automatically, no configuration needed.
 
 The install steps below use 0.9.15 as a concrete example. For 0.9.16, follow the same steps,
-substituting the version in the download and the `pip install` — the UT Lexus asset is the same
-for both versions.
+substituting the version in the download and the `pip install`.
 
 ## Installation
 
@@ -37,7 +36,9 @@ for both versions.
 - Python 3.8+
 - CARLA Simulator 0.9.15 or 0.9.16
 - CARLA ScenarioRunner (UT-ADL fork or stock 0.9.15 / 0.9.16 — see Compatibility above)
-- CARLA UT Lexus
+
+No custom vehicle asset is needed: the ego uses the stock `vehicle.lincoln.mkz_2020` blueprint. Scenarios saved
+with the UT Lexus (`vehicle.lexus.utlexus`) still load; the stock ego is used if that asset is not installed.
 
 
 #### 1. Create a directory into which to install carla and export it as `CARLA_ROOT`. Also update `PYTHONPATH` to make Carla agents importable in Python.
@@ -64,53 +65,33 @@ for both versions.
    ```
    rm CARLA_0.9.15.tar.gz
    ```
-#### 5. Go to the `Import` directory
-   ```
-   cd Import
-   ```
-#### 6. Download [utlexus.tar.gz](https://github.com/UT-ADL/carla_lexus/releases/download/v0.9.15/utlexus.tar.gz).
-   ```
-   wget https://github.com/UT-ADL/carla_lexus/releases/download/v0.9.15/utlexus.tar.gz
-   ```
-#### 7. Move to the parent directory
-   ```
-   cd ..
-   ```
-#### 8. Import the UT Lexus vehicle model.
-   ```
-   ./ImportAssets.sh
-   ```
-#### 9. Delete the `utlexus.tar.gz` file from the `Import` directory
-  ```
-  rm Import/utlexus.tar.gz
-  ```
-#### 10. Now, install the Carla Python module
+#### 5. Now, install the Carla Python module
   ```
   pip install carla==0.9.15
   ```
-#### 11. Install CARLA dependencies:
+#### 6. Install CARLA dependencies:
   ```
   sudo apt install libomp5
   ```
-#### 12. Clone [Scenario Runner](https://scenario-runner.readthedocs.io/en/latest/) to a directory of your choice
+#### 7. Clone [Scenario Runner](https://scenario-runner.readthedocs.io/en/latest/) to a directory of your choice
    ```
    git clone https://github.com/UT-ADL/scenario_runner.git
    ```
    **Note:** The stock CARLA ScenarioRunner (0.9.15 or 0.9.16) works too — clone or download
-   whichever you have and set `SCENARIO_RUNNER_ROOT` to it in step 14. You do not need the fork.
-#### 13. Install Scenario Runner requirements
+   whichever you have and set `SCENARIO_RUNNER_ROOT` to it in step 9. You do not need the fork.
+#### 8. Install Scenario Runner requirements
    ```
    pip install -r scenario_runner/requirements.txt
    ```
-#### 14. Set SCENARIO_RUNNER_ROOT environment variable
+#### 9. Set SCENARIO_RUNNER_ROOT environment variable
    ```
    echo "export SCENARIO_RUNNER_ROOT=<path_to>/scenario_runner" >> ~/.bashrc
    ```
-#### 15. Clone VSE to a directory of your choice
+#### 10. Clone VSE to a directory of your choice
    ```
    git clone https://github.com/UT-ADL/visual-scenario-editor.git
    ```
-#### 16. Install VSE requirements
+#### 11. Install VSE requirements
    ```
    pip install -r visual-scenario-editor/requirements.txt
    ```
@@ -131,16 +112,13 @@ editor (**Connect to remote server**), which avoids launching a local server ent
    Open a new terminal afterwards so they take effect.
 3. Install the matching Python client: `pip install carla==0.9.15`. If there is no wheel for your Python
    version, install the one shipped in `PythonAPI\carla\dist` instead.
-4. Import the UT Lexus asset from the [carla_lexus release](https://github.com/UT-ADL/carla_lexus/releases)
-   using CARLA's asset import mechanism for the packaged Windows build (the Linux `ImportAssets.sh` step has no
-   verified Windows equivalent here yet).
-5. Install ScenarioRunner as in steps 12-14 above, setting `SCENARIO_RUNNER_ROOT` with `setx`.
-6. Clone VSE and install its requirements (`psutil` is installed automatically on Windows):
+4. Install ScenarioRunner as in steps 7-9 above, setting `SCENARIO_RUNNER_ROOT` with `setx`.
+5. Clone VSE and install its requirements (`psutil` is installed automatically on Windows):
    ```powershell
    git clone https://github.com/UT-ADL/visual-scenario-editor.git
    pip install -r visual-scenario-editor\requirements.txt
    ```
-7. Run `python vse.py`. VSE finds `%CARLA_ROOT%\CarlaUE4.exe` automatically, or pass `--carla-path`.
+6. Run `python vse.py`. VSE finds `%CARLA_ROOT%\CarlaUE4.exe` automatically, or pass `--carla-path`.
 
 Settings are stored in `%LOCALAPPDATA%\vse` (`~/.cache/vse` on Linux). The CARLA server log goes to your temp
 directory (`carla_server.log`) unless `VSE_CARLA_SERVER_LOG` is set.

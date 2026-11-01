@@ -22,6 +22,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import carla
 
+from vse_common.ego import DEFAULT_EGO_BLUEPRINT, resolve_ego_blueprint_id
 from vse_editor.carla_io.spawning import PEDESTRIAN_PLACEMENT_CLEARANCE_M
 from vse_editor.constants import (
     DEFAULT_PERSONAL_TRIGGER_RADIUS,
@@ -938,7 +939,7 @@ def _spawn_ego_from_data(processor, ego_data, blueprint_library):
 
         # Always spawn a fresh placeholder ego — the external ego (if present)
         # is kept separate and only used during scenario playback.
-        vehicle_bp = blueprint_library.find(ego_data.get('type', 'vehicle.lexus.utlexus'))
+        vehicle_bp = blueprint_library.find(resolve_ego_blueprint_id(blueprint_library, ego_data.get('type')))
         loc_data = ego_data.get('location', {})
         rot_data = ego_data.get('rotation', {})
         base_location = carla.Location(
@@ -1002,13 +1003,13 @@ def _spawn_ego_from_data(processor, ego_data, blueprint_library):
                 ego_spawn_location = fallback_actor.get_location()
             else:
                 processor.ego_vehicle_transform = transform
-                processor.ego_vehicle_blueprint = ego_data.get('type', 'vehicle.lexus.utlexus')
+                processor.ego_vehicle_blueprint = ego_data.get('type', DEFAULT_EGO_BLUEPRINT)
                 processor.ego_vehicle_id = None
                 ego_spawn_location = carla.Location(base_location.x, base_location.y, base_location.z)
                 print(f"Warning: Failed to spawn ego vehicle at ({base_location.x:.2f}, {base_location.y:.2f}, {base_location.z:.2f}). Location might be blocked.")
     except Exception as exc:
         processor.ego_vehicle_transform = carla.Transform(spawn_location, rotation)
-        processor.ego_vehicle_blueprint = ego_data.get('type', 'vehicle.lexus.utlexus')
+        processor.ego_vehicle_blueprint = ego_data.get('type', DEFAULT_EGO_BLUEPRINT)
         processor.ego_vehicle_id = None
         print(f"Error loading ego vehicle: {exc}")
 

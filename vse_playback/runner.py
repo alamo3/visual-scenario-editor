@@ -31,6 +31,7 @@ from srunner.scenariomanager.scenarioatomics.atomic_criteria import Criterion, I
 from srunner.scenariomanager.timer import GameTime
 from srunner.tools.route_manipulation import downsample_route
 
+from vse_common.ego import DEFAULT_EGO_BLUEPRINT, resolve_ego_blueprint_id
 from vse_common.env import env_float
 from vse_common.geometry import get_ground_height, is_large_map as _is_large_map
 from types import SimpleNamespace
@@ -1259,7 +1260,7 @@ class MiniRunner:
             dest_speed_val = default_speed
 
         vehicle_data = VehicleData(
-            blueprint_id=ego_entry.get("type", "vehicle.lexus.utlexus"),
+            blueprint_id=ego_entry.get("type", DEFAULT_EGO_BLUEPRINT),
             spawn_location=spawn_location,
             spawn_rotation=spawn_rotation,
             destination=destination_loc,
@@ -1690,7 +1691,7 @@ class MiniRunner:
                 pass
             return existing
 
-        blueprint_id = ego_entry.get("type") or "vehicle.tesla.model3"
+        blueprint_id = ego_entry.get("type") or DEFAULT_EGO_BLUEPRINT
         spawn_tf = self._ego_transform_from_json(ego_entry, carla.Transform())
         blueprint_lib = self.world.get_blueprint_library() if self.world else None
         blueprint = None
@@ -1701,7 +1702,7 @@ class MiniRunner:
                 blueprint = None
             if not blueprint:
                 try:
-                    blueprint = blueprint_lib.find("vehicle.tesla.model3")
+                    blueprint = blueprint_lib.find(resolve_ego_blueprint_id(blueprint_lib, None))
                 except Exception:
                     blueprint = None
             if blueprint and blueprint.has_attribute("role_name"):
