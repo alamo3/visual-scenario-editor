@@ -22,6 +22,7 @@ import pygame
 from pygame_gui import UIManager
 from pygame_gui.elements.ui_window import UIWindow
 
+from vse_common import platform_utils
 from vse_common.env import env_float
 from vse_editor.app import (
     chrome,
@@ -34,6 +35,7 @@ from vse_editor.app import (
     stream_settings,
     world_lifecycle,
 )
+from vse_editor.app import handoff_file
 from vse_editor.app import settings as settings_app
 from vse_editor.carla_io.profiles import ConnectionProfile
 from vse_editor.carla_io.server_manager import CarlaServerManager
@@ -469,6 +471,12 @@ class VisualScenarioEditor:
         self.pending_exit = False
         self.handoff_read_fd = None
         self.wait_for_child = False
+        # Windows handoff (marker file instead of a pipe; see handoff_file.py).
+        # wait_file: we launched a child and wait for it; notify_file: we are the child.
+        self.handoff_wait_file = None
+        self.handoff_notify_file = os.environ.pop(handoff_file.ENV_VAR, None)
+        if platform_utils.IS_WINDOWS:
+            handoff_file.cleanup_stale()
         handoff_fd_env = os.environ.get('VSE_HANDOFF_FD')
         if handoff_fd_env is not None:
             try:
@@ -481,6 +489,7 @@ class VisualScenarioEditor:
 
         auto_start = bool(
             self.handoff_write_fd is not None
+            or self.handoff_notify_file is not None
             or getattr(self, "pending_scenario_load", None)
             or self.pending_remote_map
             or self._launched_with_profile_override
@@ -1221,6 +1230,22 @@ class VisualScenarioEditor:
     def _notify_handoff_ready(self):
         return relaunch._notify_handoff_ready(self)
 
+    def _discard_handoff_wait_file(self):
+        if self.handoff_wait_file is not None:
+            handoff_file.discard(self.handoff_wait_file)
+            self.handoff_wait_file = None
+
+    def _on_handoff_confirmed(self):
+        """Bookkeeping once the replacement editor has signalled ready (Windows marker-file path)."""
+        if self.pending_profile_switch:
+            if (self.connection_profile.manage_server and
+                    self.pending_profile_switch.is_remote):
+                print("[Connection] Remote session confirmed; local CARLA server will be stopped on exit.")
+                self.keep_server_running_on_exit = False
+            self.pending_profile_switch = None
+            self.pending_profile_switch_label = None
+        self.pending_exit = False
+
     def _perform_map_restart(self, map_name):
         return relaunch._perform_map_restart(self, map_name)
 
@@ -1494,6 +1519,7 @@ class VisualScenarioEditor:
             except OSError:
                 pass
             self.handoff_write_fd = None
+        self._discard_handoff_wait_file()
         pygame.quit()
         self.keep_server_running_on_exit = False
     
@@ -1663,6 +1689,11 @@ class VisualScenarioEditor:
                 pygame.display.flip()
 
                 if self.pending_exit:
+                    if self.handoff_wait_file is not None and handoff_file.consume_if_ready(self.handoff_wait_file):
+                        self.handoff_wait_file = None
+                        self._on_handoff_confirmed()
+                        running = False
+                        continue
                     if self.handoff_read_fd is not None:
                         ready, _, _ = select.select([self.handoff_read_fd], [], [], 0)
                         if ready:
@@ -1687,6 +1718,7 @@ class VisualScenarioEditor:
                             continue
                     if self.relaunch_process and self.relaunch_process.poll() is not None:
                         return_code = self.relaunch_process.returncode
+                        self._discard_handoff_wait_file()
                         print(f"Map change failed (code {return_code}). Staying in current session.")
                         self.loading_stage = f"Map change failed (code {return_code})."
                         self.startup_error = f"Map change failed (code {return_code})"
@@ -1706,6 +1738,7 @@ class VisualScenarioEditor:
                             except OSError:
                                 pass
                             self.handoff_read_fd = None
+                        self._discard_handoff_wait_file()
                         self.pending_exit = False
                         running = False
                         self.pending_profile_switch = None

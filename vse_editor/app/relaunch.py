@@ -28,7 +28,9 @@ from pygame_gui._constants import (
 from pygame_gui.windows.ui_confirmation_dialog import UIConfirmationDialog
 
 from vse_common.actor_cache import clear_bounding_box_cache
+from vse_common import platform_utils
 from vse_common.geometry import is_large_map as is_large_map_name
+from vse_editor.app import handoff_file
 from vse_editor.carla_io.profiles import ConnectionProfile
 from vse_editor.rendering.overlays import OpenDriveOverlayRenderer
 from vse_editor.ui.dialogs import RemoteConnectionDialog
@@ -247,6 +249,28 @@ def _create_remote_profile(editor, host, port, label=None):
         map_hint=editor.remote_map_hint
     )
 
+def _launch_with_handoff(editor, cmd, env):
+    """Spawn the replacement editor and arm the "ready" handoff; returns the Popen.
+
+    POSIX: inherited pipe (VSE_HANDOFF_FD), exactly as before.
+    Windows: marker file (VSE_HANDOFF_FILE) -- no pass_fds / selectable pipes there.
+    """
+    if platform_utils.IS_WINDOWS:
+        editor.handoff_wait_file = handoff_file.prepare(env)
+        return subprocess.Popen(cmd, env=env)
+
+    handoff_read_fd, handoff_write_fd = os.pipe()
+    env['VSE_HANDOFF_FD'] = str(handoff_write_fd)
+    editor.handoff_read_fd = handoff_read_fd
+    pass_fds = (handoff_write_fd,)
+    try:
+        return subprocess.Popen(cmd, env=env, pass_fds=pass_fds)
+    finally:
+        try:
+            os.close(handoff_write_fd)
+        except OSError:
+            pass
+
 def _restart_with_profile(editor, profile, *, label=None, target_map=None):
     """Restart the editor into a different connection profile (e.g., remote)."""
     if editor.restart_in_progress:
@@ -307,18 +331,7 @@ def _perform_profile_restart(editor, profile, label, target_map):
             env['VSE_PENDING_SCENARIO'] = editor.pending_scenario_load
 
         cmd = [sys.executable] + sys.argv
-        handoff_read_fd, handoff_write_fd = os.pipe()
-        env['VSE_HANDOFF_FD'] = str(handoff_write_fd)
-        editor.handoff_read_fd = handoff_read_fd
-        pass_fds = (handoff_write_fd,)
-
-        try:
-            editor.relaunch_process = subprocess.Popen(cmd, env=env, pass_fds=pass_fds)
-        finally:
-            try:
-                os.close(handoff_write_fd)
-            except OSError:
-                pass
+        editor.relaunch_process = _launch_with_handoff(editor, cmd, env)
 
         editor._enter_restart_wait_state()
 
@@ -345,6 +358,7 @@ def _handle_profile_restart_failure(editor, profile_name, error):
         except OSError:
             pass
         editor.handoff_read_fd = None
+    editor._discard_handoff_wait_file()
     editor.pending_profile_switch = None
     editor.pending_profile_switch_label = None
     editor.pending_map_switch = None
@@ -448,6 +462,7 @@ def _handle_map_restart_failure(editor, map_name, error):
         except OSError:
             pass
         editor.handoff_read_fd = None
+    editor._discard_handoff_wait_file()
     editor._reset_restart_flags()
 
 def load_map(editor, map_name):
@@ -563,6 +578,9 @@ def _cleanup_for_map_restart(editor):
 
 def _notify_handoff_ready(editor):
     """Notify the previous VSE instance that takeover is complete."""
+    if getattr(editor, "handoff_notify_file", None):
+        handoff_file.signal_ready(editor.handoff_notify_file)
+        editor.handoff_notify_file = None
     if editor.handoff_write_fd is not None:
         try:
             os.write(editor.handoff_write_fd, b'1')
@@ -667,19 +685,10 @@ def _perform_map_restart(editor, map_name):
             env['VSE_PENDING_SCENARIO'] = editor.pending_scenario_load
             print(f"Passing pending scenario through environment: {editor.pending_scenario_load}")
 
-        handoff_read_fd, handoff_write_fd = os.pipe()
-        env['VSE_HANDOFF_FD'] = str(handoff_write_fd)
-        editor.handoff_read_fd = handoff_read_fd
-        pass_fds = (handoff_write_fd,)
         try:
-            editor.relaunch_process = subprocess.Popen(cmd, env=env, pass_fds=pass_fds)
+            editor.relaunch_process = _launch_with_handoff(editor, cmd, env)
         except Exception as launch_error:
             raise RuntimeError(f"Failed to reload editor: {launch_error}")
-        finally:
-            try:
-                os.close(handoff_write_fd)
-            except OSError:
-                pass
 
         editor._enter_restart_wait_state()
 
@@ -865,19 +874,10 @@ def _perform_fast_map_reload(editor, map_name):
             env['VSE_STARTUP_MAP_PACKAGE'] = startup_map
             print(f"[External Ego] Passing startup map: {startup_map}")
 
-        handoff_read_fd, handoff_write_fd = os.pipe()
-        env['VSE_HANDOFF_FD'] = str(handoff_write_fd)
-        editor.handoff_read_fd = handoff_read_fd
-        pass_fds = (handoff_write_fd,)
         try:
-            editor.relaunch_process = subprocess.Popen(cmd, env=env, pass_fds=pass_fds)
+            editor.relaunch_process = _launch_with_handoff(editor, cmd, env)
         except Exception as launch_error:
             raise RuntimeError(f"Failed to reload editor: {launch_error}")
-        finally:
-            try:
-                os.close(handoff_write_fd)
-            except OSError:
-                pass
 
         # Hard exit immediately - don't wait for child
         # The normal wait state causes CARLA C++ threads to crash when the connection dies
