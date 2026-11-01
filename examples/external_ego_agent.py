@@ -31,10 +31,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import carla
 
-LOOKAHEAD_M = 6.0      # pure-pursuit lookahead distance
+MIN_LOOKAHEAD_M = 5.0  # pure-pursuit lookahead = clamp(3 + 0.7 * speed, MIN, MAX)
+MAX_LOOKAHEAD_M = 15.0
 WHEELBASE_M = 2.9
 MAX_STEER_RAD = 0.7    # steering angle that maps to steer = 1.0
 ARRIVE_RADIUS_M = 3.0
+SMOOTHING_TAU_S = 0.3  # steering / throttle low-pass time constant (removes jitter)
+BRAKE_DEADBAND_MS = 1.0  # only brake when this much faster than the target speed
 
 events = queue.Queue()
 
@@ -63,28 +66,46 @@ def spawn_ego(world):
     raise RuntimeError("No free spawn point for the ego")
 
 
-def drive_step(world_map, ego, destination, target_speed_ms):
-    """One control step toward `destination` (a carla.Location). Returns (control, arrived)."""
-    transform, velocity = ego.get_transform(), ego.get_velocity()
-    if transform.location.distance(destination) < ARRIVE_RADIUS_M:
-        return carla.VehicleControl(brake=1.0), True
+class Driver:
+    """Pure-pursuit steering + speed P-control, low-pass filtered so the car doesn't twitch."""
 
-    # Lookahead point: follow the lane branch that ends up closest to the destination.
-    candidates = world_map.get_waypoint(transform.location).next(LOOKAHEAD_M)
-    target = min(candidates, key=lambda w: w.transform.location.distance(destination)) if candidates else None
-    target_loc = target.transform.location if target else destination
+    def __init__(self):
+        self.steer = 0.0
+        self.throttle = 0.0
 
-    # Pure pursuit (CARLA frame: +yaw / +steer are clockwise, i.e. to the right).
-    alpha = math.atan2(target_loc.y - transform.location.y, target_loc.x - transform.location.x) \
-        - math.radians(transform.rotation.yaw)
-    alpha = math.atan2(math.sin(alpha), math.cos(alpha))
-    steer = math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), LOOKAHEAD_M) / MAX_STEER_RAD
-    speed_error = target_speed_ms - math.hypot(velocity.x, velocity.y)
-    return carla.VehicleControl(
-        steer=max(-1.0, min(1.0, steer)),
-        throttle=max(0.0, min(0.75, 0.5 * speed_error)),
-        brake=max(0.0, min(1.0, -0.5 * speed_error)),
-    ), False
+    def reset(self):
+        self.steer = self.throttle = 0.0
+
+    def step(self, world_map, ego, destination, target_speed_ms, dt):
+        """One control step toward `destination` (a carla.Location). Returns (control, arrived)."""
+        transform, velocity = ego.get_transform(), ego.get_velocity()
+        speed = math.hypot(velocity.x, velocity.y)
+        if transform.location.distance(destination) < ARRIVE_RADIUS_M:
+            self.reset()
+            return carla.VehicleControl(brake=1.0), True
+
+        # Lookahead point grows with speed; at junctions follow the branch closest to the destination.
+        lookahead = max(MIN_LOOKAHEAD_M, min(MAX_LOOKAHEAD_M, 3.0 + 0.7 * speed))
+        candidates = world_map.get_waypoint(transform.location).next(lookahead)
+        target = min(candidates, key=lambda w: w.transform.location.distance(destination)) if candidates else None
+        target_loc = target.transform.location if target else destination
+
+        # Pure pursuit (CARLA frame: +yaw / +steer are clockwise, i.e. to the right).
+        alpha = math.atan2(target_loc.y - transform.location.y, target_loc.x - transform.location.x) \
+            - math.radians(transform.rotation.yaw)
+        alpha = math.atan2(math.sin(alpha), math.cos(alpha))
+        steer_goal = math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), lookahead) / MAX_STEER_RAD
+        steer_goal = max(-1.0, min(1.0, steer_goal))
+
+        speed_error = target_speed_ms - speed
+        throttle_goal = max(0.0, min(0.7, 0.4 * speed_error))
+        brake = max(0.0, min(1.0, 0.5 * (-speed_error - BRAKE_DEADBAND_MS)))
+
+        # First-order low-pass so commands change smoothly regardless of tick rate.
+        k = min(1.0, dt / SMOOTHING_TAU_S) if dt > 0 else 1.0
+        self.steer += (steer_goal - self.steer) * k
+        self.throttle += (throttle_goal - self.throttle) * k
+        return carla.VehicleControl(steer=self.steer, throttle=self.throttle, brake=brake), False
 
 
 def main():
@@ -110,6 +131,7 @@ def main():
     print(f"Ego spawned (id {ego.id}); waiting for a route from VSE on port {args.listen_port}...")
 
     destination = None
+    driver = Driver()
     world_map = world.get_map()
     try:
         while True:
@@ -129,6 +151,7 @@ def main():
                         carla.Location(first["x"], first["y"], first["z"] + 0.5),
                         carla.Rotation(yaw=first["yaw"])))
                     destination = carla.Location(dest["x"], dest["y"], dest["z"])
+                    driver.reset()
                     print(f"Driving to ({dest['x']:.1f}, {dest['y']:.1f}) from scenario '{event.get('scenario')}'")
                 elif event.get("event") == "cancel":
                     destination = None
@@ -136,7 +159,8 @@ def main():
                     print("Route cancelled")
 
             if destination is not None:
-                control, arrived = drive_step(world_map, ego, destination, args.speed / 3.6)
+                dt = world.get_snapshot().timestamp.delta_seconds
+                control, arrived = driver.step(world_map, ego, destination, args.speed / 3.6, dt)
                 ego.apply_control(control)
                 if arrived:
                     destination = None
