@@ -40,6 +40,7 @@ from srunner.scenariomanager.scenarioatomics.atomic_criteria import RouteComplet
 
 from vse_playback.models import RoutePoint, VehicleData
 from vse_playback.npc_agent import _NoopGlobalRoutePlanner, _NpcBasicAgent, _apply_npc_detection_tuning
+from vse_playback.ego_route_sink import EgoRouteSink
 from vse_playback.ros_publisher import _ros_plan_publisher_process
 from vse_playback.route import _compute_heading, _distance, _normalize_yaw, _refine_vehicle_route
 from vse_playback.scenario import vse_play
@@ -182,6 +183,7 @@ class MiniRunner:
         on_finish=None,
         ros_publish_delay: float = 1.5,
         agent_path: Optional[str] = None,
+        ego_route_sink: Optional[str] = None,
         agent_mode: str = "autopilot",
         agent_behavior: str = "normal",
         vehicle_control_mode: str = "basic_agent",
@@ -203,6 +205,9 @@ class MiniRunner:
         self.on_finish = on_finish
         self.ros_publish_delay = max(0.0, float(ros_publish_delay))
         self.agent_path = agent_path
+        self._ego_route_sink = None
+        if ego_route_sink:
+            self._ego_route_sink = EgoRouteSink(ego_route_sink, log=lambda m: self.log(m))
         self.agent_mode = agent_mode if agent_mode in ("autopilot", "human", "custom") else "autopilot"
         self.agent_behavior = agent_behavior if agent_behavior in ("cautious", "normal", "aggressive") else "normal"
         self.vehicle_control_mode = vehicle_control_mode if vehicle_control_mode in ("basic_agent", "velocity") else "basic_agent"
@@ -309,8 +314,9 @@ class MiniRunner:
             return
 
         if self.tick_mode == "ros" and self.wait_for_ego:
-            if not self.agent_path:
-                self.log("External ego tick-mode is 'ros' but no --agent was provided; aborting.")
+            if not self.agent_path and self._ego_route_sink is None:
+                self.log("External ego tick-mode is 'ros' but neither --agent nor an ego route sink "
+                         "(--ego-route-sink / VSE_EGO_ROUTE_SINK) was provided; aborting.")
                 return
             # Ensure CarlaDataProvider is initialized *before* forking the ROS plan
             # publisher process. The child process may call interpolate_trajectory(),
@@ -1097,6 +1103,9 @@ class MiniRunner:
 
     def _start_minimal_agent_publish(self, raw_waypoints: List[Tuple[float, float, float, float]]) -> None:
         """Spawn a one-off agent publisher in a child process."""
+        if not self.agent_path:
+            self._publish_ego_route_to_sink(raw_waypoints)
+            return
         if not raw_waypoints or len(raw_waypoints) < 2:
             self.log("No waypoints available for agent; skipping publish")
             return
@@ -1134,8 +1143,32 @@ class MiniRunner:
         except Exception as exc:
             self.log(f"Failed to launch agent subprocess: {exc}")
 
+    def _publish_ego_route_to_sink(self, raw_waypoints) -> None:
+        """Hand the scenario's ego waypoints to the external stack (no agent involved)."""
+        sink = self._ego_route_sink
+        if sink is None or sink.kind == "none":
+            return
+        if not raw_waypoints:
+            self.log("No ego waypoints in scenario; nothing to send to the ego route sink")
+            return
+        try:
+            map_name = self.world.get_map().name if self.world else ""
+        except Exception:
+            map_name = ""
+        scenario = Path(self.json_path).stem
+        sink.send(EgoRouteSink.build_route_event(scenario, map_name, raw_waypoints))
+        self._ego_route_cancel_pending = True
+
+    def _cancel_ego_route_sink(self) -> None:
+        sink = self._ego_route_sink
+        if sink is None or not getattr(self, "_ego_route_cancel_pending", False):
+            return
+        self._ego_route_cancel_pending = False
+        sink.send({"event": "cancel", "scenario": Path(self.json_path).stem, "timestamp": time.time()})
+
     def _stop_ros_agent_process(self):
         """Terminate any running agent subprocess."""
+        self._cancel_ego_route_sink()
         proc = getattr(self, "_ros_agent_proc", None)
         if not proc:
             return

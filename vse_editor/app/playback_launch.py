@@ -30,6 +30,7 @@ from pygame_gui._constants import (
     UI_BUTTON_PRESSED,
 )
 
+from vse_playback.ego_route_sink import sink_spec_from_env
 from vse_editor.rendering.overlays import OpenDriveOverlayRenderer
 from vse_editor.scene_types import clone_waypoint_sequence
 from vse_editor.ui.dialogs import EnhancedFileDialog, ResultWindow
@@ -764,7 +765,8 @@ def run_scenario(editor):
         tick_mode = "ros" if (scenario_has_ego and external_ego_present) else "own"
         wait_for_ego = tick_mode == "ros"
         agent_path = None
-        if tick_mode == "ros":
+        ego_route_sink = sink_spec_from_env()
+        if tick_mode == "ros" and not ego_route_sink:
             candidate = getattr(editor, "agent_path", None)
             if candidate and not os.path.isfile(candidate):
                 editor._clear_last_agent_cache(remove_file=True)
@@ -884,6 +886,7 @@ def run_scenario(editor):
             debug=getattr(editor, "debug_mode", False),
             on_finish=_on_finish,
             agent_path=agent_path,
+            ego_route_sink=ego_route_sink,
             agent_mode=ego_agent_mode,
             agent_behavior=ego_agent_behavior,
             vehicle_control_mode=editor.vehicle_control_mode,

@@ -159,6 +159,21 @@ roslaunch autoware_mini start_carla.launch use_scenario_runner:=true map_name:="
 Use the Play button in VSE
 
 
+### External ego driven by your own stack
+
+If your own stack (e.g. a Docker container running ROS 2) spawns and drives the ego, VSE does not need an
+agent file. It adopts the ego by `role_name` and runs the scenario around it. To hand the scenario's ego
+waypoints (e.g. for destination setting) to your stack, set a route sink:
+
+```bash
+export VSE_EGO_ROUTE_SINK=http://localhost:8080/route   # or file:/path/route.json, or none
+python vse.py
+```
+
+VSE sends JSON events: `{"event": "route", "scenario", "map", "waypoints": [{x,y,z,yaw}...], "destination": {...}}`
+when playback starts and `{"event": "cancel"}` when it stops. The same option exists on the CLI as
+`--ego-route-sink`. Without a sink or `--agent`, external-ego playback still requires an agent as before.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

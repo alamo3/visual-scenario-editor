@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 import carla
 
 from vse_common.env import env_float, env_int
+from vse_playback.ego_route_sink import sink_spec_from_env
 from vse_playback.runner import (
     MiniRunner,
     _expected_ego_roles,
@@ -99,10 +100,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Explicit external ego actor id to attach/warp (implies --wait-for-ego).",
     )
     parser.add_argument(
+        "--ego-route-sink",
+        default=None,
+        help="Where to send the scenario's ego waypoints when an external stack drives the ego "
+             "(no agent is loaded): 'none', 'file:<path>', or an http(s) URL that receives JSON POSTs. "
+             "Defaults to $VSE_EGO_ROUTE_SINK.",
+    )
+    parser.add_argument(
         "--agent",
         type=str,
         default=None,
-        help="Path to a ScenarioRunner-compatible agent Python file (required when using an external ego / tick-mode=ros).",
+        help="Path to a ScenarioRunner-compatible agent Python file (for an external ego, required unless --ego-route-sink / VSE_EGO_ROUTE_SINK is set).",
     )
     parser.add_argument("--debug", action="store_true")
     return parser
@@ -223,8 +231,11 @@ def _resolve_tick_mode_and_agent(
         parser.error("Tick mode 'ros' requires an external ego vehicle, but none was detected in the world.")
 
     if tick_mode == "ros":
-        if not args.agent:
-            parser.error("External ego detected; --agent /path/to/agent.py is required to publish the route.")
+        if not args.agent and not sink_spec_from_env(args.ego_route_sink):
+            parser.error(
+                "External ego detected; pass --agent /path/to/agent.py, or --ego-route-sink "
+                "(none | file:<path> | http(s)://<url>) / VSE_EGO_ROUTE_SINK when your own stack drives the ego."
+            )
     else:
         if args.agent:
             parser.error("--agent was provided but no external ego is in use (tick-mode is not 'ros').")
@@ -320,6 +331,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         debug=bool(args.debug),
         on_finish=_on_finish,
         agent_path=agent_path,
+        ego_route_sink=sink_spec_from_env(args.ego_route_sink),
     )
 
     print(f"[MiniRunner] Running {json_path} (mode={tick_mode}, timeout={timeout_s}s)")
